@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Анализ тональности комментариев ВК</title>
+    <style> body { font-family: Arial; padding: 20px; } </style>
+</head>
+<body>
+    <h1>🔍 Анализ комментариев ВКонтакте</h1>
+    <form method="post" action="/search">
+        <input type="text" name="query" placeholder="Поисковый запрос (например, iphone)" required style="width: 300px; padding: 8px;">
+        <input type="number" name="count" value="10" min="1" max="50" placeholder="Кол-во постов" style="padding: 8px;">
+        <button type="submit" style="padding: 8px 16px;">Искать</button>
+    </form>
+</body>
+</html>

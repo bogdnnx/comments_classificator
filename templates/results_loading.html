@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Загрузка результатов...</title>
+    <script>
+        async function checkStatus() {
+            const res = await fetch(`/status/{{ task_id }}`);
+            const data = await res.json();
+            if (data.status === 'done') {
+                window.location.href = `/results/{{ task_id }}`;
+            } else {
+                document.getElementById("status").innerText = "Статус: " + data.status;
+                setTimeout(checkStatus, 2000);
+            }
+        }
+        checkStatus();
+    </script>
+</head>
+<body>
+    <h1>Обработка запроса: "{{ query }}"</h1>
+    <p id="status">Начинаем обработку...</p>
+    <p><small>Это может занять до 30 секунд. Не закрывайте страницу.</small></p>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Результаты поиска</title>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        .post { border: 1px solid #ddd; padding: 10px; margin: 10px 0; }
+        .comment { padding: 5px; margin: 5px 0; }
+        .positive { color: green; }
+        .negative { color: red; }
+        .summary { background: #f0f0f0; padding: 10px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>🔎 Результаты поиска: "{{ query }}"</h1>
+
+    <div class="summary">
+        <strong>📊 Сводка по тональности:</strong><br>
+        Положительные: <span class="positive">{{ summary.positive }}</span> |
+        Отрицательные: <span class="negative">{{ summary.negative }}</span>
+    </div>
+
+    {% for item in posts %}
+        <div class="post">
+            <h3><a href="{{ item.post_link }}" target="_blank">Пост {{ loop.index }}</a></h3>
+            <p>{{ item.post.text[:200] }}...</p>
+            <h4>Комментарии ({{ item.comments|length }}):</h4>
+            {% for comment in item.comments %}
+                <div class="comment {{ comment.sentiment }}">
+                    <strong>[{{ comment.sentiment }}]</strong> {{ comment.text }}<br>
+                    <small>Автор: {{ comment.from_id }} | <a href="{{ item.post_link }}" target="_blank">К посту</a></small>
+                </div>
+            {% endfor %}
+        </div>
+    {% endfor %}
+
+    <br><br>
+    <a href="/">← Новый поиск</a>
+</body>
+</html>

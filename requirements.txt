@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+jinja2
+python-multipart
+requests
+aiohttp
+transformers
+torch
+sentencepiece
+sqlalchemy[asyncio]
+aiosqlite
+redis
+python-dotenv
