@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Загрузка результатов...</title>
+    <title>Загрузка...</title>
     <script>
         async function checkStatus() {
             const res = await fetch(`/status/{{ task_id }}`);
@@ -17,8 +17,8 @@
     </script>
 </head>
 <body>
-    <h1>Обработка запроса: "{{ query }}"</h1>
+    <h1>⏳ Обработка запроса: "{{ query }}"</h1>
     <p id="status">Начинаем обработку...</p>
-    <p><small>Это может занять до 30 секунд. Не закрывайте страницу.</small></p>
+    <p><a href="/results/{{ task_id }}">Показать результаты вручную</a></p>
 </body>
 </html>
