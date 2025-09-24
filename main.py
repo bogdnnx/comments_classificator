@@ -16,14 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import VK_ACCESS_TOKEN, REDIS_URL, CACHE_TTL
 from classifier import SentimentClassifierStub as SentimentClassifier
-from database import get_db, init_db
+from database import get_db, init_db, AsyncSessionLocal
 from models import SearchQuery, Post, Comment
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 #app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Инициализация
 classifier = SentimentClassifier()
 executor = ThreadPoolExecutor(max_workers=4)
 r = redis.from_url(REDIS_URL, decode_responses=True)
@@ -50,7 +49,7 @@ async def vk_request(method: str, params: dict) -> dict:
     # Очистка старых времён (старше 1 сек)
     request_timestamps = [t for t in request_timestamps if now - t < 1.0]
 
-    # Если уже 3 запроса за последнюю секунду — ждём
+    # Если уже 3 запроса за последнюю секунду жджём
     if len(request_timestamps) >= 3:
         sleep_time = 1.0 - (now - request_timestamps[0])
         if sleep_time > 0:
@@ -61,7 +60,7 @@ async def vk_request(method: str, params: dict) -> dict:
 
     params.update({
         "access_token": VK_ACCESS_TOKEN,
-        "v": "5.131"  # ← лучше использовать стабильную версию, не 5.199
+        "v": "5.131"
     })
     async with ClientSession() as session:
         async with session.get(f"https://api.vk.com/method/{method}", params=params) as resp:
@@ -71,68 +70,45 @@ async def vk_request(method: str, params: dict) -> dict:
                 return {}
             return data.get("response", {})
 
-async def process_comments_async(task_id: str, query: str, count: int, cache_key: str, db_session: AsyncSession):
+async def process_comments_async(task_id: str, query: str, count: int, cache_key: str):
     try:
         print(f"🚀 Начинаем обработку задачи {task_id} для запроса: {query}")
+        # Обозначаем старт задачи, если ещё не отмечено
+        await r.hset(f"task:{task_id}", mapping={"status": "processing"})
+        async with AsyncSessionLocal() as db_session:
+            posts_data = await vk_request("newsfeed.search", {"q": query, "count": min(count, 200), "extended": 1})
+            if not posts_data:
+                print("   ❌ Ответ от newsfeed.search пустой — проверь URL и токен")
+                await r.hset(f"task:{task_id}", mapping={"status": "error", "error": "empty_response"})
+                return
+            posts = posts_data.get("items", [])
+            print(f"   Найдено постов: {len(posts)}")
 
-        posts_data = await vk_request("newsfeed.search", {"q": query, "count": min(count, 200), "extended": 1})
-        if not posts_data:
-            print("   ❌ Ответ от newsfeed.search пустой — проверь URL и токен")
-            return
-        posts = posts_data.get("items", [])
-        print(f"   Найдено постов: {len(posts)}")
+            expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+            search_query = SearchQuery(
+                query_text=query,
+                count=count,
+                task_id=task_id,
+                expires_at=expires_at
+            )
+            db_session.add(search_query)
+            await db_session.flush()
 
-        if not posts:
-            print("   ❌ Нет постов — завершаем задачу")
-            await r.hset(f"task:{task_id}", mapping={"status": "done", "message": "no_posts"})
-            return
+            if not posts:
+                print("   ❌ Нет постов — завершаем задачу (пустые результаты)")
+                await db_session.commit()
+                await r.setex(cache_key, CACHE_TTL, task_id)
+                await r.hset(f"task:{task_id}", mapping={"status": "done", "message": "no_posts"})
+                return
 
-        expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
-        search_query = SearchQuery(
-            query_text=query,
-            count=count,
-            task_id=task_id,
-            expires_at=expires_at
-        )
-        db_session.add(search_query)
-        await db_session.flush()
-
-        all_comments = []
-        all_texts = []
-
-        for post in posts:
-            owner_id = post["owner_id"]
-            post_id = post["id"]
-            comments_data = await vk_request("wall.getComments", {
-                "owner_id": owner_id,
-                "post_id": post_id,
-                "count": 100
-            })
-            comments = comments_data.get("items", [])
-            for comment in comments:
-                text = comment.get("text", "").strip()
-                if text:
-                    all_comments.append({
-                        "comment": comment,
-                        "post": post,
-                        "owner_id": owner_id,
-                        "post_id": post_id
-                    })
-                    all_texts.append(text)
-
-        if all_texts:
-            labels, confidences = await classify_texts_async(all_texts)
+            all_comments = []
+            all_texts = []
             post_cache = {}
 
-            for i, item in enumerate(all_comments):
-                if i >= len(labels):
-                    break
-
-                post = item["post"]
-                owner_id = item["owner_id"]
-                post_id = item["post_id"]
-                comment = item["comment"]
-
+            # Сохраняем все посты сразу даже если комментариев нет
+            for post in posts:
+                owner_id = post["owner_id"]
+                post_id = post["id"]
                 if (owner_id, post_id) not in post_cache:
                     db_post = Post(
                         vk_post_id=post_id,
@@ -146,27 +122,55 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     await db_session.flush()
                     post_cache[(owner_id, post_id)] = db_post.id
 
-                db_comment = Comment(
-                    vk_comment_id=comment["id"],
-                    post_id=post_cache[(owner_id, post_id)],
-                    from_id=comment.get("from_id"),
-                    text=comment["text"][:2000],
-                    sentiment=labels[i],
-                    sentiment_confidence=float(confidences[i]),
-                    date=comment.get("date")
-                )
-                db_session.add(db_comment)
+                # Загружаем комментарии к посту
+                comments_data = await vk_request("wall.getComments", {
+                    "owner_id": owner_id,
+                    "post_id": post_id,
+                    "count": 100
+                })
+                comments = comments_data.get("items", [])
+                for comment in comments:
+                    text = comment.get("text", "").strip()
+                    if text:
+                        all_comments.append({
+                            "comment": comment,
+                            "owner_id": owner_id,
+                            "post_id": post_id
+                        })
+                        all_texts.append(text)
 
-        if all_texts:
-            # ... классификация и сохранение ...
-            print(f"   Сохранено комментариев: {len(all_texts)}")
-        else:
-            print("   ❌ Нет комментариев для сохранения")
+            if all_texts:
+                labels, confidences = await classify_texts_async(all_texts)
 
-        await db_session.commit()
-        await r.setex(cache_key, CACHE_TTL, task_id)
-        await r.hset(f"task:{task_id}", mapping={"status": "done"})
-        print(f"✅ Задача {task_id} успешно завершена")
+                for i, item in enumerate(all_comments):
+                    if i >= len(labels):
+                        break
+
+                    owner_id = item["owner_id"]
+                    post_id = item["post_id"]
+                    comment = item["comment"]
+
+
+                    db_comment = Comment(
+                        vk_comment_id=comment["id"],
+                        post_id=post_cache[(owner_id, post_id)],
+                        from_id=comment.get("from_id"),
+                        text=comment["text"][:2000],
+                        sentiment=labels[i],
+                        sentiment_confidence=float(confidences[i]),
+                        date=comment.get("date")
+                    )
+                    db_session.add(db_comment)
+
+            if all_texts:
+                print(f"   Сохранено комментариев: {len(all_texts)}")
+            else:
+                print("   ❌ Нет комментариев для сохранения")
+
+            await db_session.commit()
+            await r.setex(cache_key, CACHE_TTL, task_id)
+            await r.hset(f"task:{task_id}", mapping={"status": "done"})
+            print(f"✅ Задача {task_id} успешно завершена")
 
     except Exception as e:
         print(f"❌ Ошибка в задаче {task_id}: {e}")
@@ -186,13 +190,23 @@ async def search_posts(
 ):
     cache_key = make_cache_key(query, count)
     cached_task_id = await r.get(cache_key)
-
     if cached_task_id:
-        return RedirectResponse(url=f"/results/{cached_task_id}", status_code=303)
+        status_data = await r.hgetall(f"task:{cached_task_id}")
+        status = status_data.get("status") if status_data else None
+        if status == "done":
+            return RedirectResponse(url=f"/results/{cached_task_id}", status_code=303)
+        else:
+            return templates.TemplateResponse("results_loading.html", {
+                "request": request,
+                "task_id": cached_task_id,
+                "query": query
+            })
 
     task_id = str(uuid.uuid4())
+    # Отмечаем задачу как запущенную и сохраняем соответствие кэша
+    await r.hset(f"task:{task_id}", mapping={"status": "processing"})
     await r.setex(cache_key, CACHE_TTL, task_id)
-    background_tasks.add_task(process_comments_async, task_id, query, count, cache_key, db)
+    background_tasks.add_task(process_comments_async, task_id, query, count, cache_key)
 
     return templates.TemplateResponse("results_loading.html", {
         "request": request,

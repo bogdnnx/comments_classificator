@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ошибка</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+        .card { background: white; padding: 20px; border-radius: 8px; max-width: 720px; margin: 40px auto; }
+        .title { font-size: 22px; font-weight: bold; margin-bottom: 10px; }
+        .msg { color: #c62828; margin-bottom: 20px; }
+        a.back { display: inline-block; padding: 8px 16px; background: #1976d2; color: white; text-decoration: none; border-radius: 4px; }
+    </style>
+    </head>
+<body>
+    <div class="card">
+        <div class="title">Произошла ошибка</div>
+        <div class="msg">{{ message or 'Результаты не найдены или устарели. Повторите поиск.' }}</div>
+        <a class="back" href="/">← На главную</a>
+    </div>
+</body>
+</html>
+
