@@ -5,6 +5,7 @@ from typing import List, Tuple
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import torch.nn.functional as F
+
 class SentimentAnalyzer:
     def __init__(self, LevelSentiment = 0.5): # Порог эмоциональной оценки.
         #self.model_name = "cointegrated/rubert-tiny2"
@@ -24,7 +25,7 @@ class SentimentAnalyzer:
                 return_tensors='pt',
                 truncation=True,
                 padding=True,
-                max_length=512
+                #max_length=512
             ).to(self.device)
 
             with torch.no_grad():
@@ -34,9 +35,9 @@ class SentimentAnalyzer:
 
             # Определяем эмоциональную оценку
             if sentiment_score > self.LevelSentiment:
-                return "Позитивный", sentiment_score
+                return "positive", sentiment_score
             else:
-                return "Негативный", sentiment_score
+                return "negative", sentiment_score
 
         except Exception as e:
             print(f"Ошибка при анализе текста: {e}")
@@ -73,12 +74,16 @@ class SentimentClassifierStub:
             labels.append(label)
             confidences.append(confidence)
 
-        return labels, confidences
+        return (labels, confidences)
 
 if __name__ == "__main__":
     Classifier = SentimentClassifierStub()
     Commentary = ['Ну так, все под стать времени, че не так-то?', 'Да уж... Делают они, а стыдно мне.','Крутой фильм','Какое прекрасное качество']
-    labels, conf = Classifier.predict_in_batches(Commentary)
+    Result = Classifier.predict_in_batches(Commentary)
+    print(type(Result))
+    labels, conf = Result
+    print(type(labels),type(conf))
+    print(type(labels[0]),type(conf[0]))
     print(f"comm:{Commentary}\n"
           f"labels:{labels}\n"
           f"conf:{conf}")
