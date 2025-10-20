@@ -475,7 +475,7 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
                     Post.id.in_(existing_post_ids) &
                     (Post.date >= int(start_dt.timestamp())) &
                     (Post.date <= current_timestamp)
-                )
+                ).order_by(Post.date.desc())  # СОРТИРОВКА: от новых к старым
             )
             all_posts = posts_res.scalars().all()
             existing_vk_ids = {(p.owner_id, p.vk_post_id) for p in all_posts}
@@ -483,7 +483,7 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
             # Связываем найденные посты с текущим запросом (если еще не связаны)
             existing_links = await db.execute(
                 select(DayPost.post_id).where(
-                    (DayPost.day_query_id == day_query.id) &  # ИСПРАВЛЕНО: DayPost вместо DayQuery
+                    (DayPost.day_query_id == day_query.id) &
                     (DayPost.post_id.in_(existing_post_ids))
                 )
             )
@@ -498,12 +498,33 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
     all_texts = []
 
     for period_start, period_end in needed_periods:
-        period_days = (period_end - period_start).days
-        if period_days < 0:  # Может быть отрицательным для части дня
-            continue
+        # Разбиваем период на однодневные отрезки
+        current_day_start = period_start
+        daily_segments = []
 
-        new_items = await _fetch_vk_posts(normalized_query, period_start, period_end)
+        while current_day_start < period_end:
+            current_day_end = min(
+                datetime(current_day_start.year, current_day_start.month, current_day_start.day) + timedelta(days=1),
+                period_end
+            )
+            daily_segments.append((current_day_start, current_day_end))
+            current_day_start = current_day_end
 
+        # Загружаем посты для каждого дня отдельно и накапливаем в new_items
+        new_items = []
+        for day_start, day_end in daily_segments:
+            print(
+                f"🔍 Загружаем посты за период: {day_start.strftime('%d.%m.%Y %H:%M')} - {day_end.strftime('%d.%m.%Y %H:%M')}")
+
+            day_items = await _fetch_vk_posts(normalized_query, day_start, day_end)
+            print(f"   Найдено постов за этот день: {len(day_items)}")
+
+            # Добавляем посты дня к общему списку new_items
+            new_items.extend(day_items)
+
+        print(f"📊 Всего загружено постов за период: {len(new_items)}")
+
+        # Обрабатываем все накопленные посты
         for post in new_items:
             owner_id = post.get("owner_id")
             vk_post_id = post.get("id")
@@ -599,9 +620,12 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
     # Создаем summary для комментариев
     summary = _build_summary(all_comments_result)
 
+    # СОРТИРУЕМ ПОСТЫ ОТ НОВЫХ К СТАРЫМ
+    all_posts_sorted = sorted(all_posts, key=lambda x: x.date if x.date else 0, reverse=True)
+
     return {
         "day_query": day_query,
-        "posts": all_posts,
+        "posts": all_posts_sorted,  # Возвращаем отсортированные посты
         "comments": all_comments_result,
         "summary": summary,
         "new_posts_count": new_posts_count,
@@ -609,4 +633,3 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
         "coverage_periods": existing_coverage,
         "fetched_periods": needed_periods
     }
-
