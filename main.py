@@ -23,38 +23,46 @@ from models import SearchQuery, Post, Comment, SearchQueryDay, DayPost
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
+
 # Добавляем фильтр для форматирования даты
 def timestamp_to_date(timestamp):
     if timestamp:
         return dt.fromtimestamp(timestamp).strftime("%d.%m.%y")
     return ""
 
+
 templates.env.filters["timestamp_to_date"] = timestamp_to_date
-#app.mount("/static", StaticFiles(directory="static"), name="static")
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 classifier = SentimentClassifier()
 executor = ThreadPoolExecutor(max_workers=4)
 r = redis.from_url(REDIS_URL, decode_responses=True)
+
 
 @app.on_event("startup")
 async def on_startup():
     await init_db()
     print("✅ Таблицы в БД созданы (если их ещё не было)")
 
+
 def normalize_query(query: str) -> str:
     """Нормализует поисковый запрос: убирает лишние пробелы, приводит к нижнему регистру"""
     return query.strip().lower()
+
 
 def make_cache_key(query: str, count: int) -> str:
     normalized_query = normalize_query(query)
     key_str = f"search:{normalized_query}:{count}"
     return hashlib.md5(key_str.encode()).hexdigest()
 
+
 async def classify_texts_async(texts: List[str]):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, classifier.predict_in_batches, texts)
 
+
 request_timestamps = []
+
 
 async def vk_request(method: str, params: dict) -> dict:
     global request_timestamps
@@ -76,10 +84,10 @@ async def vk_request(method: str, params: dict) -> dict:
         "access_token": VK_ACCESS_TOKEN,
         "v": "5.131"
     })
-    
+
     # Добавляем задержку перед каждым запросом
     await asyncio.sleep(0.25)
-    
+
     async with ClientSession() as session:
         async with session.get(f"https://api.vk.com/method/{method}", params=params) as resp:
             data = await resp.json()
@@ -156,6 +164,7 @@ async def get_or_create_day_query(db: AsyncSession, query: str, days: int) -> "S
     await db.flush()
     return dq
 
+
 async def process_comments_async(task_id: str, query: str, count: int, cache_key: str):
     try:
         normalized_query = normalize_query(query)
@@ -163,7 +172,8 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
         # Обозначаем старт задачи, если ещё не отмечено
         await r.hset(f"task:{task_id}", mapping={"status": "processing"})
         async with AsyncSessionLocal() as db_session:
-            posts_data = await vk_request("newsfeed.search", {"q": normalized_query, "count": min(count, 200), "extended": 1})
+            posts_data = await vk_request("newsfeed.search",
+                                          {"q": normalized_query, "count": min(count, 200), "extended": 1})
             if not posts_data:
                 print("   ❌ Ответ от newsfeed.search пустой — проверь URL и токен")
                 await r.hset(f"task:{task_id}", mapping={"status": "error", "error": "empty_response"})
@@ -237,7 +247,6 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     post_id = item["post_id"]
                     comment = item["comment"]
 
-
                     db_comment = Comment(
                         vk_comment_id=comment["id"],
                         post_id=post_cache[(owner_id, post_id)],
@@ -263,16 +272,18 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
         print(f"❌ Ошибка в задаче {task_id}: {e}")
         await r.hset(f"task:{task_id}", mapping={"status": "error", "error": str(e)})
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+
 @app.post("/search_new", response_class=HTMLResponse)
 async def search_posts_days(
-    request: Request,
-    query: str = Form(...),
-    count: int = Form(10),
-    db: AsyncSession = Depends(get_db)
+        request: Request,
+        query: str = Form(...),
+        count: int = Form(10),
+        db: AsyncSession = Depends(get_db)
 ):
     days = count
     result = await fetch_posts_for_last_days(db, query, days)
@@ -290,13 +301,14 @@ async def search_posts_days(
         "new_posts_count": result.get("new_posts_count", 0),
     })
 
+
 @app.post("/search", response_class=HTMLResponse)
 async def search_posts(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    query: str = Form(...),
-    count: int = Form(10),
-    db: AsyncSession = Depends(get_db)
+        request: Request,
+        background_tasks: BackgroundTasks,
+        query: str = Form(...),
+        count: int = Form(10),
+        db: AsyncSession = Depends(get_db)
 ):
     cache_key = make_cache_key(query, count)
     cached_task_id = await r.get(cache_key)
@@ -324,12 +336,14 @@ async def search_posts(
         "query": query
     })
 
+
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
     status_data = await r.hgetall(f"task:{task_id}")
     if not status_data:
         return {"status": "not_found"}
     return {"status": status_data.get("status", "processing")}
+
 
 @app.get("/results/{task_id}", response_class=HTMLResponse)
 async def show_results(request: Request, task_id: str, db: AsyncSession = Depends(get_db)):
@@ -369,13 +383,57 @@ async def show_results(request: Request, task_id: str, db: AsyncSession = Depend
         }
     })
 
+
 async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> Dict[str, Any]:
     normalized_query = normalize_query(query)
     end_dt = datetime.utcnow()
     start_dt = end_dt - timedelta(days=days)
-    
-    # Ищем существующий запрос за этот период
-    existing_query = await db.execute(
+    current_timestamp = int(end_dt.timestamp())
+
+    # Определяем границы: сегодняшний день и предыдущие дни
+    today_start = datetime(end_dt.year, end_dt.month, end_dt.day)
+    yesterday_end = today_start - timedelta(seconds=1)
+
+    # Разделяем период на две части: предыдущие дни и сегодня
+    previous_days_start = start_dt
+    previous_days_end = yesterday_end
+    today_period = (today_start, end_dt)
+
+    # Ищем существующие запросы для предыдущих дней
+    existing_queries = await db.execute(
+        select(SearchQueryDay).where(
+            (SearchQueryDay.query_text == normalized_query) &
+            (SearchQueryDay.start_date <= previous_days_end) &
+            (SearchQueryDay.end_date >= previous_days_start)
+        ).order_by(SearchQueryDay.days.desc())
+    )
+    existing_queries_list = existing_queries.scalars().all()
+
+    # Определяем, какие периоды предыдущих дней уже есть в БД
+    existing_coverage = []
+    needed_previous_periods = [(previous_days_start, previous_days_end)]
+
+    for eq in existing_queries_list:
+        coverage_start = max(eq.start_date, previous_days_start)
+        coverage_end = min(eq.end_date, previous_days_end)
+
+        if coverage_start <= coverage_end:
+            existing_coverage.append((coverage_start, coverage_end, eq))
+
+            # Обновляем список нужных периодов для предыдущих дней
+            new_needed_periods = []
+            for needed_start, needed_end in needed_previous_periods:
+                if coverage_start > needed_start:
+                    new_needed_periods.append((needed_start, coverage_start))
+                if coverage_end < needed_end:
+                    new_needed_periods.append((coverage_end, needed_end))
+            needed_previous_periods = new_needed_periods
+
+    # Сегодняшний день всегда добавляем в нужные периоды для перепроверки
+    needed_periods = needed_previous_periods + [today_period]
+
+    # Создаем или находим основной запрос для текущего периода
+    main_query = await db.execute(
         select(SearchQueryDay).where(
             (SearchQueryDay.query_text == normalized_query) &
             (SearchQueryDay.days == days) &
@@ -383,10 +441,9 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
             (SearchQueryDay.end_date <= end_dt + timedelta(minutes=5))
         )
     )
-    day_query = existing_query.scalar_one_or_none()
-    
+    day_query = main_query.scalar_one_or_none()
+
     if not day_query:
-        # Создаём новый запрос
         day_query = SearchQueryDay(
             query_text=normalized_query,
             days=days,
@@ -396,121 +453,160 @@ async def fetch_posts_for_last_days(db: AsyncSession, query: str, days: int) -> 
         )
         db.add(day_query)
         await db.flush()
-    
-    # Получаем все посты, связанные с этим запросом
-    existing_dp = await db.execute(select(DayPost).where(DayPost.day_query_id == day_query.id))
-    existing_day_posts = existing_dp.scalars().all()
-    existing_post_ids = [dp.post_id for dp in existing_day_posts]
-    
-    # Фильтруем существующие посты по актуальности (входят ли в текущий диапазон)
-    current_timestamp = int(end_dt.timestamp())
-    relevant_posts = []
-    if existing_post_ids:
-        posts_res = await db.execute(select(Post).where(Post.id.in_(existing_post_ids)))
-        all_existing_posts = posts_res.scalars().all()
-        for post in all_existing_posts:
-            if post.date and (current_timestamp - post.date) <= (days * 24 * 60 * 60):
-                relevant_posts.append(post)
-    
-    # Загружаем новые посты из VK
-    new_items = await _fetch_vk_posts(normalized_query, start_dt, end_dt)
+
+    # Собираем посты из существующих запросов (только для предыдущих дней)
+    all_posts = []
+    existing_vk_ids = set()
     new_posts_count = 0
-    post_id_map: Dict[tuple, int] = {}
-    all_comments = []
-    all_texts: List[str] = []
-    
-    # Собираем все уникальные посты (существующие + новые)
-    all_posts = relevant_posts.copy()
-    existing_vk_ids = {(p.owner_id, p.vk_post_id) for p in relevant_posts}
-    
-    for post in new_items:
-        owner_id = post.get("owner_id")
-        vk_post_id = post.get("id")
-        if owner_id is None or vk_post_id is None:
-            continue
-            
-        # Если пост уже есть в актуальных - пропускаем
-        if (owner_id, vk_post_id) in existing_vk_ids:
-            continue
-            
-        # Ищем пост в БД по owner_id+vk_post_id
-        res_post = await db.execute(select(Post).where((Post.owner_id == owner_id) & (Post.vk_post_id == vk_post_id)))
-        db_post = res_post.scalar_one_or_none()
-        if not db_post:
-            db_post = Post(
-                vk_post_id=vk_post_id,
-                owner_id=owner_id,
-                text=post.get("text", "")[:5000],
-                date=post.get("date"),
-                url=f"https://vk.com/wall{owner_id}_{vk_post_id}",
-                search_query_id=None
+
+    if existing_coverage:
+        # Получаем все посты из покрытых периодов предыдущих дней
+        existing_post_ids_query = await db.execute(
+            select(DayPost.post_id).where(
+                DayPost.day_query_id.in_([eq.id for _, _, eq in existing_coverage])
             )
-            db.add(db_post)
-            await db.flush()
-            new_posts_count += 1
-        else:
-            # Пост уже есть в БД, но не был связан с этим запросом
-            new_posts_count += 1
-            
-        post_id_map[(owner_id, vk_post_id)] = db_post.id
-        all_posts.append(db_post)
-        existing_vk_ids.add((owner_id, vk_post_id))
-        
-        # Связываем пост с запросом
-        db.add(DayPost(day_query_id=day_query.id, post_id=db_post.id))
-        
-        # Загружаем комментарии с обработкой ошибок
-        try:
-            comments = await _fetch_vk_comments(owner_id, vk_post_id)
-            for c in comments:
-                text = (c.get("text") or "").strip()
-                if not text:
-                    continue
-                all_comments.append({"comment": c, "owner_id": owner_id, "post_id": vk_post_id})
-                all_texts.append(text)
-        except Exception as e:
-            print(f"Ошибка при загрузке комментариев к посту {owner_id}_{vk_post_id}: {e}")
+        )
+        existing_post_ids = existing_post_ids_query.scalars().all()
+
+        if existing_post_ids:
+            # Фильтруем посты по актуальности для текущего периода
+            posts_res = await db.execute(
+                select(Post).where(
+                    Post.id.in_(existing_post_ids) &
+                    (Post.date >= int(start_dt.timestamp())) &
+                    (Post.date <= current_timestamp)
+                )
+            )
+            all_posts = posts_res.scalars().all()
+            existing_vk_ids = {(p.owner_id, p.vk_post_id) for p in all_posts}
+
+            # Связываем найденные посты с текущим запросом (если еще не связаны)
+            existing_links = await db.execute(
+                select(DayPost.post_id).where(
+                    (DayPost.day_query_id == day_query.id) &  # ИСПРАВЛЕНО: DayPost вместо DayQuery
+                    (DayPost.post_id.in_(existing_post_ids))
+                )
+            )
+            existing_linked_ids = set(existing_links.scalars().all())
+
+            for post in all_posts:
+                if post.id not in existing_linked_ids:
+                    db.add(DayPost(day_query_id=day_query.id, post_id=post.id))
+
+    # Загружаем посты для недостающих периодов (включая сегодняшний день)
+    all_comments = []
+    all_texts = []
+
+    for period_start, period_end in needed_periods:
+        period_days = (period_end - period_start).days
+        if period_days < 0:  # Может быть отрицательным для части дня
             continue
-    
-    # Классифицируем новые комментарии
+
+        new_items = await _fetch_vk_posts(normalized_query, period_start, period_end)
+
+        for post in new_items:
+            owner_id = post.get("owner_id")
+            vk_post_id = post.get("id")
+            if owner_id is None or vk_post_id is None:
+                continue
+
+            if (owner_id, vk_post_id) in existing_vk_ids:
+                continue
+
+            # Ищем пост в БД
+            res_post = await db.execute(
+                select(Post).where(
+                    (Post.owner_id == owner_id) &
+                    (Post.vk_post_id == vk_post_id)
+                )
+            )
+            db_post = res_post.scalar_one_or_none()
+
+            if not db_post:
+                db_post = Post(
+                    vk_post_id=vk_post_id,
+                    owner_id=owner_id,
+                    text=post.get("text", "")[:5000],
+                    date=post.get("date"),
+                    url=f"https://vk.com/wall{owner_id}_{vk_post_id}",
+                    search_query_id=None
+                )
+                db.add(db_post)
+                await db.flush()
+                new_posts_count += 1
+
+            # Связываем с текущим запросом
+            db.add(DayPost(day_query_id=day_query.id, post_id=db_post.id))
+            all_posts.append(db_post)
+            existing_vk_ids.add((owner_id, vk_post_id))
+
+            # Загружаем комментарии
+            try:
+                comments = await _fetch_vk_comments(owner_id, vk_post_id)
+                for c in comments:
+                    text = (c.get("text") or "").strip()
+                    if not text:
+                        continue
+
+                    # Проверяем существование комментария
+                    existing_comment = await db.execute(
+                        select(Comment.id).where(
+                            (Comment.vk_comment_id == c["id"]) &
+                            (Comment.post_id == db_post.id)
+                        )
+                    )
+                    if not existing_comment.first():
+                        all_comments.append({
+                            "comment": c,
+                            "post_id": db_post.id,
+                            "text": text
+                        })
+                        all_texts.append(text)
+            except Exception as e:
+                print(f"Ошибка при загрузке комментариев к посту {owner_id}_{vk_post_id}: {e}")
+                continue
+
+    # Пакетная классификация и сохранение комментариев
     if all_texts:
         labels, confidences = await _classify_texts(all_texts)
+
         for i, item in enumerate(all_comments):
             if i >= len(labels):
                 break
+
             c = item["comment"]
-            
-            # Проверяем, не существует ли уже такой комментарий
-            existing_comment = await db.execute(
-                select(Comment).where(
-                    (Comment.vk_comment_id == c["id"]) & 
-                    (Comment.post_id == post_id_map[(item["owner_id"], item["post_id"])])
-                )
-            )
-            if existing_comment.first():
-                continue  # Пропускаем дубликат
-                
             db.add(Comment(
                 vk_comment_id=c["id"],
-                post_id=post_id_map[(item["owner_id"], item["post_id"])],
+                post_id=item["post_id"],
                 from_id=c.get("from_id"),
-                text=c.get("text", "")[:2000],
+                text=item["text"][:2000],
                 sentiment=labels[i],
                 sentiment_confidence=float(confidences[i]),
                 date=c.get("date")
             ))
-    
+
     await db.commit()
-    
-    # Получаем все комментарии для всех постов
-    all_post_ids = [p.id for p in all_posts]
-    comments_res = await db.execute(select(Comment).where(Comment.post_id.in_(all_post_ids)))
-    all_comments = comments_res.scalars().all()
-    
+
+    # Получаем все комментарии для возвращаемых постов
+    post_ids = [post.id for post in all_posts]
+    all_comments_result = []
+    if post_ids:
+        comments_res = await db.execute(
+            select(Comment).where(Comment.post_id.in_(post_ids))
+        )
+        all_comments_result = comments_res.scalars().all()
+
+    # Создаем summary для комментариев
+    summary = _build_summary(all_comments_result)
+
     return {
-        "day_query": day_query, 
-        "posts": all_posts, 
-        "comments": all_comments, 
-        "summary": _build_summary(all_comments),
-        "new_posts_count": new_posts_count
+        "day_query": day_query,
+        "posts": all_posts,
+        "comments": all_comments_result,
+        "summary": summary,
+        "new_posts_count": new_posts_count,
+        "total_posts": len(all_posts),
+        "coverage_periods": existing_coverage,
+        "fetched_periods": needed_periods
     }
+
