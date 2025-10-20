@@ -2,14 +2,33 @@
 <html>
 <head>
     <title>Анализ комментариев ВК</title>
-    <style> body { font-family: Arial; padding: 20px; } </style>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        .form-container { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        h2 { color: #333; }
+    </style>
 </head>
 <body>
     <h1>🔍 Анализ тональности комментариев ВКонтакте</h1>
-    <form method="post" action="/search">
-        <input type="text" name="query" placeholder="Поисковый запрос (например, iphone)" required style="width: 300px; padding: 8px;">
-        <input type="number" name="count" value="10" min="1" max="50" placeholder="Кол-во постов" style="padding: 8px;">
-        <button type="submit" style="padding: 8px 16px;">Искать</button>
-    </form>
+
+    <!-- Существующая форма для поиска постов -->
+    <div class="form-container">
+        <h2>Поиск по количеству постов</h2>
+        <form method="post" action="/search">
+            <input type="text" name="query" placeholder="Поисковый запрос (например, iphone)" required style="width: 300px; padding: 8px;">
+            <input type="number" name="count" value="10" min="1" max="50" placeholder="Кол-во постов" style="padding: 8px;">
+            <button type="submit" style="padding: 8px 16px;">Искать посты</button>
+        </form>
+    </div>
+
+    <!-- Новая форма для анализа по дням -->
+    <div class="form-container">
+        <h2>Анализ по временному периоду</h2>
+        <form method="post" action="/search_new">
+            <input type="text" name="query" placeholder="Поисковый запрос (например, iphone)" required style="width: 300px; padding: 8px;">
+            <input type="number" name="count" value="10" min="1" max="365" placeholder="Кол-во дней" style="padding: 8px;">
+            <button type="submit" style="padding: 8px 16px;">Анализировать по дням</button>
+        </form>
+    </div>
 </body>
 </html>

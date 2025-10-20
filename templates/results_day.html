@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Результаты анализа за период</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        .post { background: #f8f9fa; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .comment { padding: 10px; margin: 5px 0; border-left: 3px solid #ddd; }
+        .sentiment-positive { border-left-color: #28a745; background: #f8fff9; }
+        .sentiment-negative { border-left-color: #dc3545; background: #fff8f8; }
+        .sentiment-neutral { border-left-color: #6c757d; background: #f8f9fa; }
+        .stats { display: flex; gap: 15px; margin-bottom: 20px; padding: 15px; background: #e9ecef; border-radius: 5px; }
+        .period-info { background: #d1ecf1; padding: 10px; border-radius: 5px; margin-bottom: 15px; }
+        .stat-item { padding: 8px 15px; border-radius: 4px; }
+        .stat-positive { background: #d4edda; color: #155724; }
+        .stat-negative { background: #f8d7da; color: #721c24; }
+        .stat-neutral { background: #e2e3e5; color: #383d41; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Результаты анализа для "{{ query }}"</h1>
+
+        <div class="period-info">
+            <strong>Период анализа:</strong> последние {{ days }} дней
+            {% if new_posts_count > 0 %}
+            <br><strong>Новых постов найдено:</strong> {{ new_posts_count }}
+            {% endif %}
+        </div>
+
+        <div class="stats">
+            <div class="stat-item stat-positive">Позитивных: {{ summary.positive }}</div>
+            <div class="stat-item stat-negative">Негативных: {{ summary.negative }}</div>
+            <div class="stat-item stat-neutral">Нейтральных: {{ summary.neutral }}</div>
+            <div class="stat-item">Всего комментариев: {{ summary.total }}</div>
+        </div>
+
+        {% for post in posts %}
+        <div class="post">
+            <h3>Пост: {{ post.text[:100] }}{% if post.text|length > 100 %}...{% endif %}</h3>
+            <p><small>Дата: {{ post.date | int | timestamp_to_date }} | URL: <a href="{{ post.url }}" target="_blank">{{ post.url }}</a></small></p>
+
+            <h4>Комментарии ({{ comments_by_post[post.id]|length }}):</h4>
+            {% for comment in comments_by_post[post.id] %}
+            <div class="comment sentiment-{{ comment.sentiment }}">
+                {{ comment.text }}
+                <br><small>Тональность: {{ comment.sentiment }} | Уверенность: {{ "%.2f"|format(comment.sentiment_confidence) }}</small>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
