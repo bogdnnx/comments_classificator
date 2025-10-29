@@ -66,6 +66,7 @@ class SentimentClassifierStub:
         confidences = []
 
         for text in texts:
+            # Простая эвристика: если есть "хорош", "отличн", "люб" — positive
             text_lower = text.lower()
             label, confidence = self.Analyzer.analyze_sentiment(text_lower)
 
