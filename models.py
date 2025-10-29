@@ -1,3 +1,4 @@
+# models.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, CheckConstraint, func
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -36,3 +37,14 @@ class Comment(Base):
     sentiment_confidence = Column(Float)
     date = Column(Integer)
     classified_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# --- Таблица Project ---
+class Project(Base):
+    __tablename__ = 'projects'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False) # Тема
+    search_depth_days = Column(Integer, nullable=False) # Глубина поиска в днях
+    # Используем offset-naive datetime, как в остальных таблицах
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())

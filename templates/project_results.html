@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Результаты проекта: {{ project.name }}</title>
+    <style>
+        body { font-family: Arial; padding: 20px; }
+        .summary { margin: 20px 0; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; }
+        .summary h3 { margin-top: 0; }
+        .stats { display: flex; justify-content: space-around; }
+        .stat-box { padding: 10px; margin: 5px; border: 1px solid #ddd; border-radius: 5px; text-align: center; }
+        .positive { background-color: #d4edda; }
+        .negative { background-color: #f8d7da; }
+        .back-link { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>📊 Результаты проекта: "{{ query }}"</h1>
+    <div class="summary">
+        <h3>Сводка</h3>
+        <div class="stats">
+            <div class="stat-box positive">
+                <strong>Позитивных:</strong><br>{{ stats.positive }}
+            </div>
+            <div class="stat-box negative">
+                <strong>Негативных:</strong><br>{{ stats.negative }}
+            </div>
+            <div class="stat-box">
+                <strong>Всего комментариев:</strong><br>{{ stats.total }}
+            </div>
+            <div class="stat-box">
+                <strong>Всего постов:</strong><br>{{ stats.posts_count }}
+            </div>
+        </div>
+    </div>
+    <div class="back-link">
+        <a href="/">← Вернуться на главную</a>
+    </div>
+</body>
+</html>
