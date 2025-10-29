@@ -116,4 +116,6 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
 
     except Exception as e:
         print(f"❌ Ошибка в задаче {task_id}: {e}")
-        await r.hset
+        await r.hset(f"task:{task_id}", mapping={"status": "error", "error": str(e)})
+
+# Другие функции, связанные с логикой поиска, можно добавить сюда при необходимости.

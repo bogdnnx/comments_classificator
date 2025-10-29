@@ -1,118 +1,109 @@
-# main.py
+# main_app.py
 import asyncio
-import hashlib
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from typing import List
 from fastapi import FastAPI, Request, Form, Depends, BackgroundTasks
 from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
-import redis.asyncio as redis
-from aiohttp import ClientSession
-from datetime import datetime, timedelta
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from database import get_db, init_db # Предполагается существование файла database.py
+from search_logic import process_comments_async # Импортируем основную функцию поиска
+from utils import make_cache_key, r # Импортируем утилиты и Redis
 
-from config import VK_ACCESS_TOKEN, REDIS_URL, CACHE_TTL
-from classifier import SentimentClassifierStub as SentimentClassifier
-from database import get_db, init_db, AsyncSessionLocal
-from models import SearchQuery, Post, Comment
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# Подключение к Redis
-r = redis.from_url(REDIS_URL, decode_responses=True)
-
-@app.on_event('startup')
-async def startup_event():
+@app.on_event("startup")
+async def on_startup():
     await init_db()
+    print("✅ Таблицы в БД созданы (если их ещё не было)")
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
+async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.post("/search/")
+@app.post("/search", response_class=HTMLResponse)
 async def search_posts(
     request: Request,
-    tag: str = Form(...),
+    background_tasks: BackgroundTasks,
+    query: str = Form(...),
     count: int = Form(10),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db)
 ):
+    from utils import CACHE_TTL # Импорт внутри функции, если не глобальный
+
+    cache_key = make_cache_key(query, count)
+    cached_task_id = await r.get(cache_key)
+    if cached_task_id:
+        status_data = await r.hgetall(f"task:{cached_task_id}")
+        status = status_data.get("status") if status_data else None
+        if status == "done":
+            return RedirectResponse(url=f"/results/{cached_task_id}", status_code=303)
+        else:
+            return templates.TemplateResponse("results_loading.html", {
+                "request": request,
+                "task_id": cached_task_id,
+                "query": query
+            })
+
+    task_id = asyncio.get_event_loop().create_future() # Используем Future для генерации ID в асинхронном контексте
+    import uuid
     task_id = str(uuid.uuid4())
-    cache_key = await make_cache_key(task_id)
 
-    initial_status = {
-        "status": "processing",
-        "progress": {"current": 0, "total": count},
-        "query_text": tag,
-        "count": count
-    }
-    await r.setex(cache_key, CACHE_TTL, initial_status)
+    # Отмечаем задачу как запущенную и сохраняем соответствие кэша
+    await r.hset(f"task:{task_id}", mapping={"status": "processing"})
+    await r.setex(cache_key, CACHE_TTL, task_id)
 
-    background_tasks.add_task(process_comments_async, task_id, tag, count, db)
-
-    return RedirectResponse(url=f"/status/{task_id}", status_code=303)
+    background_tasks.add_task(process_comments_async, task_id, query, count, cache_key)
+    return templates.TemplateResponse("results_loading.html", {
+        "request": request,
+        "task_id": task_id,
+        "query": query
+    })
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
-    cache_key = await make_cache_key(task_id)
-    status_data = await r.get(cache_key)
-
+    status_data = await r.hgetall(f"task:{task_id}")
     if not status_data:
-        raise HTTPException(status_code=404, detail="Task not found or expired")
+        return {"status": "not_found"}
+    return {"status": status_data.get("status", "processing")}
 
-    return status_data
+@app.get("/results/{task_id}", response_class=HTMLResponse)
+async def show_results(request: Request, task_id: str, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select # Импорт внутри функции
+    from models import SearchQuery, Post, Comment # Предполагается существование файла models.py
 
-@app.get("/results/{task_id}")
-async def get_results(task_id: str, db: AsyncSession = Depends(get_db)):
-    cache_key = await make_cache_key(task_id)
-    status_data = await r.get(cache_key)
-
-    if not status_data:
-        raise HTTPException(status_code=404, detail="Results not found or expired")
-
-    if status_data.get("status") != "completed":
-        return status_data
-
-    query_result = await db.execute(
-        select(SearchQuery).where(SearchQuery.task_id == task_id)
-    )
-    search_query = query_result.scalar_one_or_none()
-
+    result = await db.execute(select(SearchQuery).where(SearchQuery.task_id == task_id))
+    search_query = result.scalar_one_or_none()
     if not search_query:
-        raise HTTPException(status_code=404, detail="Results for this task ID not found in database")
+        return templates.TemplateResponse("error.html", {
+            "request": request,
+            "message": "Результаты удалены или не найдены. Повторите поиск."
+        })
 
-    posts_result = await db.execute(
-        select(Post).where(Post.search_query_id == search_query.id)
-    )
+    posts_result = await db.execute(select(Post).where(Post.search_query_id == search_query.id))
     posts = posts_result.scalars().all()
+    post_ids = [post.id for post in posts]
+    comments_result = await db.execute(select(Comment).where(Comment.post_id.in_(post_ids)))
+    all_comments = comments_result.scalars().all()
 
-    results = []
-    for post in posts:
-        comments_result = await db.execute(
-            select(Comment).where(Comment.post_id == post.id)
-        )
-        comments = comments_result.scalars().all()
+    total_positive = sum(1 for c in all_comments if c.sentiment == "positive")
+    total_negative = sum(1 for c in all_comments if c.sentiment == "negative")
+    comments_by_post = {}
+    for comment in all_comments:
+        comments_by_post.setdefault(comment.post_id, []).append(comment)
 
-        post_data = {
-            "post_id": post.vk_post_id,
-            "owner_id": post.owner_id,
-            "text": post.text,
-            "url": post.url,
-            "comments": [
-                {
-                    "comment_id": c.vk_comment_id,
-                    "text": c.text,
-                    "sentiment": c.sentiment,
-                    "confidence": c.sentiment_confidence
-                }
-                for c in comments
-            ]
+    return templates.TemplateResponse("results.html", {
+        "request": request,
+        "query": search_query.query_text,
+        "posts": posts,
+        "comments_by_post": comments_by_post,
+        "all_comments": all_comments,
+        "summary": {
+            "positive": total_positive,
+            "negative": total_negative,
+            "total": len(all_comments)
         }
-        results.append(post_data)
+    })
 
-    return {"task_id": task_id, "query": search_query.query_text, "results": results}
-
-# Запуск приложения
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

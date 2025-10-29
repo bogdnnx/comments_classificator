@@ -1,43 +1,53 @@
 # utils.py
 import asyncio
-import logging
-from typing import List, Dict, Any
+import hashlib
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import List
 import redis.asyncio as redis
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from models import Comment, Post, SearchQuery
-from classifier import SentimentClassifierStub
-from config import REDIS_URL, CACHE_TTL
+from aiohttp import ClientSession
+from config import VK_ACCESS_TOKEN, REDIS_URL, CACHE_TTL # Предполагается существование файла config.py
+from classifier import SentimentClassifierStub as SentimentClassifier # Предполагается существование файла classifier.py
 
-# Инициализируем классификатор как глобальную переменную
-classifier = SentimentClassifierStub()
-
-async def make_cache_key(task_id: str) -> str:
-    """Создает ключ для кэша Redis по ID задачи."""
-    # Просто возвращаем строку с префиксом, как часто делают
-    return f"task_status:{task_id}"
-
-async def classify_comments_batch_async(texts: List[str]) -> tuple[List[str], List[float]]:
-    """
-    Асинхронно классифицирует батч комментариев.
-    В текущей реализации predict_in_batches может быть синхронным,
-    но мы оборачиваем его в asyncio.to_thread, если это тяжелая операция.
-    """
-    # Если predict_in_batches может блокировать, используем to_thread
-    # labels, confidences = await asyncio.to_thread(classifier.predict_in_batches, texts)
-    # Если нет, можно вызвать напрямую
-    labels, confidences = classifier.predict_in_batches(texts)
-    return labels, confidences
-
-async def update_task_status(task_id: str, status: str, progress: Dict[str, Any] = None):
-    """Обновляет статус задачи в Redis."""
-    cache_key = await make_cache_key(task_id)
-    status_data = {
-        "status": status,
-        "progress": progress or {}
-    }
-    # Используем TTL из конфига
-    await r.setex(cache_key, CACHE_TTL, status_data)
-
-# Подключение к Redis для использования в утилитах
+# --- Глобальные переменные/объекты ---
+classifier = SentimentClassifier()
+executor = ThreadPoolExecutor(max_workers=4)
 r = redis.from_url(REDIS_URL, decode_responses=True)
+
+# --- Вспомогательные функции ---
+def make_cache_key(query: str, count: int) -> str:
+    key_str = f"search:{query.strip().lower()}:{count}"
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+async def classify_texts_async(texts: List[str]):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, classifier.predict_in_batches, texts)
+
+request_timestamps = []
+
+async def vk_request(method: str, params: dict) -> dict:
+    global request_timestamps
+    now = asyncio.get_event_loop().time()
+    # Очистка старых времён (старше 1 сек)
+    request_timestamps = [t for t in request_timestamps if now - t < 1.0]
+    # Если уже 3 запроса за последнюю секунду ждём
+    if len(request_timestamps) >= 3:
+        sleep_time = 1.0 - (now - request_timestamps[0])
+        if sleep_time > 0:
+            await asyncio.sleep(sleep_time)
+        request_timestamps = []  # сбрасываем окно
+    request_timestamps.append(now)
+
+    params.update({
+        "access_token": VK_ACCESS_TOKEN,
+        "v": "5.131"
+    })
+    async with ClientSession() as session:
+        async with session.get(f"https://api.vk.com/method/{method}", params=params) as resp:
+            data = await resp.json()
+            if "error" in data:
+                print(f"VK API Error: {data['error']}")
+                return {}
+            return data.get("response", {})
+
+# Другие вспомогательные функции можно добавить сюда.
