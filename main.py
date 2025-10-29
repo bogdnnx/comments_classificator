@@ -4,20 +4,22 @@ import hashlib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
-from fastapi import FastAPI, Request, Form, Depends, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Request, Form, Depends, BackgroundTasks
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
 import redis.asyncio as redis
 from aiohttp import ClientSession
-from datetime import datetime, timedelta, timezone # Импортируем timezone
+from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import VK_ACCESS_TOKEN, REDIS_URL, CACHE_TTL
 from classifier import SentimentClassifierStub as SentimentClassifier
 from database import get_db, init_db, AsyncSessionLocal
-from models import SearchQuery, Post, Comment # Убираем Project из импорта, т.к. теперь он в project_logic
-from project_logic import create_project, get_all_projects, get_project_by_id, update_project, delete_project, run_project_search, get_project_stats # Импортируем из project_logic
+from models import SearchQuery, Post, Comment
+
+# --- ИМПОРТ ИЗ PROJECT_LOGIC ---
+from project_logic import create_project, get_all_projects, get_project_by_id, update_project, delete_project, run_project_search, get_project_stats
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -25,22 +27,17 @@ templates = Jinja2Templates(directory="templates")
 classifier = SentimentClassifier()
 executor = ThreadPoolExecutor(max_workers=4)
 r = redis.from_url(REDIS_URL, decode_responses=True)
-
 @app.on_event("startup")
 async def on_startup():
     await init_db()
     print("✅ Таблицы в БД созданы (если их ещё не было)")
-
 def make_cache_key(query: str, count: int) -> str:
     key_str = f"search:{query.strip().lower()}:{count}"
     return hashlib.md5(key_str.encode()).hexdigest()
-
 async def classify_texts_async(texts: List[str]):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, classifier.predict_in_batches, texts)
-
 request_timestamps = []
-
 async def vk_request(method: str, params: dict) -> dict:
     global request_timestamps
     now = asyncio.get_event_loop().time()
@@ -65,6 +62,7 @@ async def vk_request(method: str, params: dict) -> dict:
                 return {}
             return data.get("response", {})
 
+# --- ОБНОВЛЁННАЯ ФУНКЦИЯ process_comments_async (с offset-naive датами) ---
 async def process_comments_async(task_id: str, query: str, count: int, cache_key: str):
     try:
         print(f"🚀 Начинаем обработку задачи {task_id} для запроса: {query}")
@@ -72,24 +70,21 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
         await r.hset(f"task:{task_id}", mapping={"status": "processing"})
         async with AsyncSessionLocal() as db_session:
             posts_data = await vk_request("newsfeed.search", {"q": query, "count": min(count, 200), "extended": 1})
-            # --- ИСПРАВЛЕНО: posts_data -> posts_data ---
             if not posts_data:
                 print("   ❌ Ответ от newsfeed.search пустой — проверь URL и токен")
                 await r.hset(f"task:{task_id}", mapping={"status": "error", "error": "empty_response"})
                 return
             posts = posts_data.get("items", [])
             print(f"   Найдено постов: {len(posts)}")
-            # --- ИСПРАВЛЕНО: Используем timezone-aware datetime для expires_at ---
-            now = datetime.now(timezone.utc) # Используем timezone-aware now
-            expires_at = now + timedelta(seconds=CACHE_TTL) # Результат также будет timezone-aware
+            # --- ИСПРАВЛЕНО: Используем offset-naive datetime для expires_at ---
+            expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL) # offset-naive
             search_query = SearchQuery(
                 query_text=query,
                 count=count,
-                # --- ИСПРАВЛЕНО: created_at также должен быть timezone-aware ---
-                # created_at=datetime.utcnow(), # Устаревший offset-naive способ
-                created_at=now, # Используем timezone-aware now
+                # --- ИСПРАВЛЕНО: created_at также должен быть offset-naive ---
+                created_at=datetime.utcnow(), # offset-naive
                 task_id=task_id,
-                expires_at=expires_at # Уже timezone-aware
+                expires_at=expires_at # offset-naive
             )
             db_session.add(search_query)
             await db_session.flush()
@@ -164,12 +159,14 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
         print(f"❌ Ошибка в задаче {task_id}: {e}")
         await r.hset(f"task:{task_id}", mapping={"status": "error", "error": str(e)})
 
+# --- ОБНОВЛЁННЫЙ эндпоинт / ---
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: AsyncSession = Depends(get_db)):
     # Получаем проекты для отображения на главной странице, используя функцию из project_logic
     projects = await get_all_projects(db)
     return templates.TemplateResponse("index.html", {"request": request, "projects": projects})
 
+# --- СУЩЕСТВУЮЩИЕ эндпоинты для основного поиска ---
 @app.post("/search", response_class=HTMLResponse)
 async def search_posts(
     request: Request,
@@ -241,7 +238,7 @@ async def show_results(request: Request, task_id: str, db: AsyncSession = Depend
         }
     })
 
-# --- Новые эндпоинты для проектов, использующие project_logic ---
+# --- НОВЫЕ эндпоинты для проектов ---
 @app.post("/projects/create")
 async def create_new_project(
     name: str = Form(...),
@@ -309,6 +306,7 @@ async def get_edit_project_form(
     # Вызываем функцию из project_logic
     project = await get_project_by_id(db, project_id)
     if not project:
+        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Project not found")
     return templates.TemplateResponse("edit_project.html", {"request": request, "project": project})
 
@@ -323,6 +321,7 @@ async def update_existing_project(
     # Вызываем функцию из project_logic
     success = await update_project(db, project_id, name, search_depth_days)
     if not success:
+        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Project not found")
     return RedirectResponse(url="/", status_code=303) # Перенаправляем на главную
 
