@@ -1,11 +1,79 @@
 # search_logic.py
 import asyncio
-from typing import List
-from utils import vk_request, classify_texts_async, r # Импортируем зависимости из utils
-from database import AsyncSessionLocal # Импортируем сессию из database
-from models import SearchQuery, Post, Comment # Предполагается существование файла models.py
-from datetime import datetime, timedelta
-import uuid # Импортируем uuid для генерации ID
+from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from config import CACHE_TTL
+from models import SearchQuery, Post, Comment
+from utils import vk_request, classify_texts_async
+
+
+async def create_initial_search_query(db: AsyncSession, query: str, count: int, task_id: str):
+    expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+    initial_search_query = SearchQuery(
+        query_text=query,
+        count=count,
+        task_id=task_id,
+        expires_at=expires_at
+    )
+    db.add(initial_search_query)
+    await db.commit()
+    await db.refresh(initial_search_query)
+    return initial_search_query
+
+
+async def get_search_task_status(db: AsyncSession, task_id: str) -> dict:
+    search_query_result = await db.execute(select(SearchQuery).where(SearchQuery.task_id == task_id))
+    search_query = search_query_result.scalar_one_or_none()
+    if not search_query:
+        return {"status": "not_found"}
+
+    posts_result = await db.execute(select(Post).where(Post.search_query_id == search_query.id))
+    posts = posts_result.scalars().all()
+
+    if len(posts) > 0:
+        return {"status": "done"}
+
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    time_diff = now_utc - search_query.created_at.replace(tzinfo=None)
+    if time_diff.total_seconds() > 600:  # 10 минут
+        return {"status": "error", "error": "timeout or empty result"}
+    else:
+        return {"status": "processing"}
+
+
+async def get_search_results(db: AsyncSession, task_id: str):
+    result = await db.execute(select(SearchQuery).where(SearchQuery.task_id == task_id))
+    search_query = result.scalar_one_or_none()
+    if not search_query:
+        return None
+
+    posts_result = await db.execute(select(Post).where(Post.search_query_id == search_query.id))
+    posts = posts_result.scalars().all()
+    post_ids = [post.id for post in posts]
+
+    comments_result = await db.execute(select(Comment).where(Comment.post_id.in_(post_ids)))
+    all_comments = comments_result.scalars().all()
+
+    total_positive = sum(1 for c in all_comments if c.sentiment == "positive")
+    total_negative = sum(1 for c in all_comments if c.sentiment == "negative")
+
+    comments_by_post = {}
+    for comment in all_comments:
+        comments_by_post.setdefault(comment.post_id, []).append(comment)
+
+    return {
+        "query": search_query.query_text,
+        "posts": posts,
+        "comments_by_post": comments_by_post,
+        "all_comments": all_comments,
+        "summary": {
+            "positive": total_positive,
+            "negative": total_negative,
+            "total": len(all_comments)
+        }
+    }
 
 
 async def process_comments_async(task_id: str, query: str, count: int, cache_key: str):
@@ -13,45 +81,47 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
     Основная функция для поиска постов и комментариев,
     их классификации и сохранения в БД.
     """
+    from config import CACHE_TTL
+    from datetime import datetime, timedelta
+
     try:
         print(f"🚀 Начинаем обработку задачи {task_id} для запроса: {query}")
-
-        # Обозначаем старт задачи, если ещё не отмечено
-        await r.hset(f"task:{task_id}", mapping={"status": "processing"})
-
         async with AsyncSessionLocal() as db_session:
+            search_query_result = await db_session.execute(select(SearchQuery).where(SearchQuery.task_id == task_id))
+            existing_search_query = search_query_result.scalar_one_or_none()
+            if existing_search_query:
+                print(f"   📝 Обновляем существующий SearchQuery с ID: {existing_search_query.id}")
+                existing_search_query.expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+                existing_search_query.count = count
+                search_query = existing_search_query
+            else:
+                print(f"   🆕 Создаём новый SearchQuery с task_id: {task_id}")
+                expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+                search_query = SearchQuery(
+                    query_text=query,
+                    count=count,
+                    task_id=task_id,
+                    expires_at=expires_at
+                )
+                db_session.add(search_query)
+            await db_session.flush()
+
             posts_data = await vk_request("newsfeed.search", {"q": query, "count": min(count, 200), "extended": 1})
             if not posts_data:
                 print("   ❌ Ответ от newsfeed.search пустой — проверь URL и токен")
-                await r.hset(f"task:{task_id}", mapping={"status": "error", "error": "empty_response"})
                 return
 
             posts = posts_data.get("items", [])
             print(f"   Найдено постов: {len(posts)}")
-
-            from utils import CACHE_TTL # Импорт внутри функции
-            expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
-            search_query = SearchQuery(
-                query_text=query,
-                count=count,
-                task_id=task_id,
-                expires_at=expires_at
-            )
-            db_session.add(search_query)
-            await db_session.flush()
-
             if not posts:
                 print("   ❌ Нет постов — завершаем задачу (пустые результаты)")
                 await db_session.commit()
-                await r.setex(cache_key, CACHE_TTL, task_id)
-                await r.hset(f"task:{task_id}", mapping={"status": "done", "message": "no_posts"})
                 return
 
             all_comments = []
             all_texts = []
             post_cache = {}
 
-            # Сохраняем все посты сразу даже если комментариев нет
             for post in posts:
                 owner_id = post["owner_id"]
                 post_id = post["id"]
@@ -68,7 +138,6 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     await db_session.flush()
                     post_cache[(owner_id, post_id)] = db_post.id
 
-                # Загружаем комментарии к посту
                 comments_data = await vk_request("wall.getComments", {
                     "owner_id": owner_id,
                     "post_id": post_id,
@@ -110,12 +179,7 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                 print("   ❌ Нет комментариев для сохранения")
 
             await db_session.commit()
-            await r.setex(cache_key, CACHE_TTL, task_id)
-            await r.hset(f"task:{task_id}", mapping={"status": "done"})
             print(f"✅ Задача {task_id} успешно завершена")
 
     except Exception as e:
         print(f"❌ Ошибка в задаче {task_id}: {e}")
-        await r.hset(f"task:{task_id}", mapping={"status": "error", "error": str(e)})
-
-# Другие функции, связанные с логикой поиска, можно добавить сюда при необходимости.

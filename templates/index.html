@@ -119,6 +119,9 @@
                         <form method="post" action="/projects/{{ project.id }}/search" style="display:inline;">
                             <button type="submit">Поиск</button>
                         </form>
+                        <form method="post" action="/projects/{{ project.id }}/quick_search" style="display:inline;">
+                            <button type="submit">Быстрый поиск</button>
+                        </form>
                     </div>
                 </div>
                 <!-- Форма для удаления проекта -->
@@ -139,10 +142,6 @@
         document.getElementById('cancelFormBtn').addEventListener('click', function() {
             document.getElementById('projectForm').style.display = 'none';
         });
-
-        // Загрузка списка проектов при загрузке страницы больше не нужна,
-        // так как он отрисовывается на сервере.
-        // document.addEventListener('DOMContentLoaded', function() { ... });
     </script>
 </body>
 </html>

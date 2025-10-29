@@ -1,33 +1,33 @@
 # project_logic.py
 import asyncio
-from datetime import datetime, timedelta # Убран timezone
+from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import Project, SearchQuery, Post, Comment
-from utils import vk_request, classify_texts_async # Предполагаем, что эти функции находятся в utils.py
-from config import CACHE_TTL # Предполагаем, что CACHE_TTL определена в config.py
+from models import Project, SearchQuery, Post, Comment, ProjectSearchQuery, ProjectComment
+from utils import vk_request, classify_texts_async
+from config import CACHE_TTL
 
-# --- Функции для работы с проектами ---
+
+# --- CRUD для проектов ---
 async def create_project(db: AsyncSession, name: str, search_depth_days: int) -> Project:
-    """Создает новый проект в БД."""
     project = Project(name=name, search_depth_days=search_depth_days)
     db.add(project)
     await db.commit()
     await db.refresh(project)
     return project
 
+
 async def get_all_projects(db: AsyncSession) -> list[Project]:
-    """Получает список всех проектов из БД."""
     result = await db.execute(select(Project))
     return result.scalars().all()
 
+
 async def get_project_by_id(db: AsyncSession, project_id: int) -> Project | None:
-    """Получает проект по ID из БД."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     return result.scalar_one_or_none()
 
+
 async def update_project(db: AsyncSession, project_id: int, name: str, search_depth_days: int) -> bool:
-    """Обновляет проект в БД."""
     project = await get_project_by_id(db, project_id)
     if not project:
         return False
@@ -36,27 +36,20 @@ async def update_project(db: AsyncSession, project_id: int, name: str, search_de
     await db.commit()
     return True
 
-# --- НОВАЯ ФУНКЦИЯ: Удаление проекта ---
+
 async def delete_project(db: AsyncSession, project_id: int) -> bool:
-    """Удаляет проект и связанные с ним SearchQuery, Post и Comment из БД."""
     project = await get_project_by_id(db, project_id)
     if not project:
         print(f"❌ Проект с ID {project_id} не найден для удаления.")
         return False
-
-    # Удаляем проект. Благодаря ondelete="CASCADE" в моделях,
-    # связанные SearchQuery, Post и Comment будут удалены автоматически.
     await db.delete(project)
     await db.commit()
-    print(f"✅ Проект с ID {project_id} и связанные данные успешно удалены из БД.")
+    print(f"✅ Проект с ID {project_id} и связанные данные успешно удалены.")
     return True
 
+
+# --- Основная функция поиска для проекта ---
 async def run_project_search(db: AsyncSession, project_id: int):
-    """
-    Запускает поиск для проекта.
-    Проверяет наличие существующих данных в БД за указанный период.
-    Всегда перепроверяет сегодняшний день.
-    """
     project = await get_project_by_id(db, project_id)
     if not project:
         print(f"❌ Проект с ID {project_id} не найден.")
@@ -64,81 +57,81 @@ async def run_project_search(db: AsyncSession, project_id: int):
 
     query_text = project.name
     depth_days = project.search_depth_days
-    print(f"🚀 Запуск поиска для проекта '{query_text}' за {depth_days} дней.")
+    print(f"🚀 Запуск поиска для проекта '{query_text}' (ID: {project_id}) за {depth_days} дней.")
 
-    # Вычисляем диапазон дат
-    # --- ИСПОЛЬЗУЕМ offset-naive datetime ---
-    now = datetime.utcnow() # offset-naive
-    today_start = int(datetime(now.year, now.month, now.day).timestamp()) # Начало сегодняшнего дня (00:00:00 UTC)
-    today_end = int(now.timestamp()) # Конец сегодняшнего дня (сейчас)
+    # --- Даты поиска (offset-naive) ---
+    now = datetime.utcnow()
+    today_start = int(datetime(now.year, now.month, now.day).timestamp())
+    today_end = int(now.timestamp())
+    search_start_date = today_start - (depth_days - 1) * 86400
 
-    # Вычисляем диапазон для проверки кэша (вчера - depth_days + 1, включая сегодня)
-    # Например, если depth = 3, то кэш проверяется для: (сегодня - 2 дня) до сегодня
-    # start_date для кэша = сегодня - 2 дня = today_start - (2 * 86400)
-    # end_date для кэша = today_end
-    cache_start_date = today_start - (depth_days - 1) * 86400 # 86400 секунд в дне
-
-    # --- НОВАЯ ЛОГИКА: Цикличный поиск по дням ---
-    all_filtered_posts = []
-    total_posts_fetched = 0
-    post_cache = {} # Для отслеживания ID постов, чтобы избежать дубликатов
-    all_comments = []
-    all_texts = []
-
-    # 1. Проверяем кэш для дней, кроме сегодняшнего
-    # Ищем *любой* SearchQuery, который пересекается с периодом, НЕ включая сегодня
-    existing_query_result = await db.execute(
-        select(SearchQuery)
-        .where(
-            and_(
-                SearchQuery.query_text == query_text,
-                SearchQuery.created_at >= datetime.fromtimestamp(cache_start_date), # offset-naive
-                SearchQuery.created_at <= datetime.fromtimestamp(today_start - 1)   # offset-naive, до начала сегодняшнего дня
-            )
-        )
-        .order_by(SearchQuery.created_at.desc()) # Берем самый новый за период до сегодня
+    # --- Поиск/создание SearchQuery через ProjectSearchQuery ---
+    project_query_link_result = await db.execute(
+        select(ProjectSearchQuery)
+        .where(ProjectSearchQuery.project_id == project_id)
+        .order_by(ProjectSearchQuery.id.desc())
     )
-    existing_search_query = existing_query_result.scalar_one_or_none()
+    project_query_link = project_query_link_result.scalar_one_or_none()
 
-    if existing_search_query:
-        print(f"   💾 Найден кэш для дней до сегодняшнего (ID: {existing_search_query.id}).")
-        # Загружаем посты из кэша
-        posts_result = await db.execute(select(Post).where(Post.search_query_id == existing_search_query.id))
-        cached_posts = posts_result.scalars().all()
-        for post in cached_posts:
-            post_cache[(post.owner_id, post.vk_post_id)] = post.id
-        print(f"   📥 Загружено {len(cached_posts)} постов из кэша.")
-
-    # 2. Выполняем поиск по дням, включая сегодняшний день
-    current_end_time = today_end
-    for day in range(depth_days):
-        # --- ИСПОЛЬЗУЕМ offset-naive datetime ---
-        current_start_time = int((datetime.fromtimestamp(current_end_time) - timedelta(days=1)).timestamp()) # offset-naive
-
-        # Если это сегодняшний день, всегда делаем запрос
-        if current_start_time >= today_start:
-            print(f"   🔄 Перепроверка сегодняшнего дня: {datetime.fromtimestamp(current_start_time).date()}")
+    if project_query_link:
+        search_query_result = await db.execute(
+            select(SearchQuery).where(SearchQuery.id == project_query_link.search_query_id)
+        )
+        search_query = search_query_result.scalar_one_or_none()
+        if not search_query:
+            print(f"❌ Связанный SearchQuery не найден. Создаём новый.")
+            expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+            search_query = SearchQuery(
+                query_text=query_text,
+                count=0,
+                created_at=datetime.utcnow(),
+                expires_at=expires_at,
+                task_id=f"project_{project_id}"
+            )
+            db.add(search_query)
+            await db.flush()
+            project_query_link.search_query_id = search_query.id
+            db.add(project_query_link)
         else:
-            print(f"   📥 Запрос к API за день: {datetime.fromtimestamp(current_start_time).date()}")
+            print(f"   📥 Используем существующий SearchQuery (ID: {search_query.id})")
+    else:
+        print(f"   🆕 Создаём новый SearchQuery для проекта {project_id}")
+        expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+        search_query = SearchQuery(
+            query_text=query_text,
+            count=0,
+            created_at=datetime.utcnow(),
+            expires_at=expires_at,
+            task_id=f"project_{project_id}"
+        )
+        db.add(search_query)
+        await db.flush()
+        project_query_link = ProjectSearchQuery(project_id=project_id, search_query_id=search_query.id)
+        db.add(project_query_link)
 
+    # --- Поиск постов по дням ---
+    all_filtered_posts = []
+    post_cache = {}
+    current_end_time = today_end
+
+    for day in range(depth_days):
+        current_start_time = int((datetime.fromtimestamp(current_end_time) - timedelta(days=1)).timestamp())
+        print(f"   📥 Ищем посты с {datetime.fromtimestamp(current_start_time).date()} по {datetime.fromtimestamp(current_end_time).date()}")
         posts_data = await vk_request("newsfeed.search", {
             "q": query_text,
             "start_time": current_start_time,
             "end_time": current_end_time,
-            "count": 50, # Максимум за один запрос
+            "count": 200,
             "extended": 1
         })
-
-        if not posts_data: # --- ИСПРАВЛЕНО: posts_data -> posts_data ---
-            print(f"   ❌ Ответ от newsfeed.search пустой для диапазона {current_start_time}-{current_end_time}")
+        if not posts_data:
+            print(f"   ❌ Пустой ответ от VK для диапазона {current_start_time}-{current_end_time}")
             current_end_time = current_start_time
-            continue # Переходим к следующему дню
+            continue
 
         posts = posts_data.get("items", [])
-        total_posts_fetched += len(posts)
         print(f"   Найдено постов за день {datetime.fromtimestamp(current_start_time).date()}: {len(posts)}")
 
-        # Фильтруем посты по дате и ID, чтобы избежать дубликатов
         for post in posts:
             post_date = post.get("date", 0)
             if current_start_time <= post_date <= current_end_time:
@@ -146,40 +139,29 @@ async def run_project_search(db: AsyncSession, project_id: int):
                 post_id = post["id"]
                 if (owner_id, post_id) not in post_cache:
                     all_filtered_posts.append(post)
-                    post_cache[(owner_id, post_id)] = None # Заглушка, будет заполнена позже
+                    post_cache[(owner_id, post_id)] = None
+        current_end_time = current_start_time
 
-        current_end_time = current_start_time # Переходим к предыдущему дню
+    print(f"   Всего уникальных постов: {len(all_filtered_posts)}")
 
-    print(f"   Всего новых/уникальных постов за {depth_days} дней (включая сегодня): {len(all_filtered_posts)} (запрошено: {total_posts_fetched})")
-
-    # --- Обработка найденных постов (новых или обновленных) ---
-    # Если есть существующий кэш, используем его SearchQuery, иначе создаем новый
-    if existing_search_query:
-        print(f"   📝 Обновляем существующий SearchQuery ID: {existing_search_query.id}")
-        search_query = existing_search_query
-    else:
-        print(f"   🆕 Создаем новый SearchQuery")
-        # --- ИСПОЛЬЗУЕМ offset-naive datetime для expires_at ---
-        expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL) # offset-naive
-        # Используем дату самого нового поста (первого в списке, т.к. VK возвращает от новых к старым)
-        # или время запуска, если постов не было
-        newest_post_date = datetime.fromtimestamp(all_filtered_posts[0]['date']) if all_filtered_posts else datetime.utcnow() # offset-naive
-        search_query = SearchQuery(
-            query_text=query_text,
-            count=len(all_filtered_posts), # Используем фильтрованное количество новых
-            created_at=newest_post_date, # offset-naive
-            expires_at=expires_at, # offset-naive
-            task_id=None # Проекты не используют task_id напрямую
-        )
-        db.add(search_query)
-        await db.flush() # Получаем ID
-
-    # Обновляем кэш с новыми постами и сохраняем их в БД
+    # --- Сохранение постов ---
     for post in all_filtered_posts:
-        post_date = post.get("date")
         owner_id = post["owner_id"]
         post_id = post["id"]
-        if (owner_id, post_id) not in post_cache or post_cache[(owner_id, post_id)] is None: # Проверяем, что пост новый
+        post_date = post.get("date")
+
+        existing_post_result = await db.execute(
+            select(Post).where(
+                and_(
+                    Post.vk_post_id == post_id,
+                    Post.owner_id == owner_id,
+                    Post.search_query_id == search_query.id
+                )
+            )
+        )
+        existing_post = existing_post_result.scalar_one_or_none()
+
+        if not existing_post:
             db_post = Post(
                 vk_post_id=post_id,
                 owner_id=owner_id,
@@ -189,55 +171,73 @@ async def run_project_search(db: AsyncSession, project_id: int):
                 search_query_id=search_query.id
             )
             db.add(db_post)
-            await db.flush() # Получаем ID нового поста
-            post_cache[(owner_id, post_id)] = db_post.id # Обновляем кэш
+            await db.flush()
+            post_cache[(owner_id, post_id)] = db_post.id
+        else:
+            post_cache[(owner_id, post_id)] = existing_post.id
 
-    # --- Загрузка и обновление комментариев ---
-    # Загружаем *все* посты, связанные с текущим SearchQuery (включая кэшированные и новые)
-    all_posts_result = await db.execute(select(Post).where(Post.search_query_id == search_query.id))
-    all_posts_in_query = all_posts_result.scalars().all()
-    print(f"   📥 Загружено {len(all_posts_in_query)} постов для обновления комментариев.")
+    # --- Обработка комментариев (включая существующие!) ---
+    all_comments_to_classify = []
+    all_texts_to_classify = []
 
-    for post in all_posts_in_query:
-        # Загружаем комментарии к посту
+    for post in all_filtered_posts:
+        owner_id = post["owner_id"]
+        post_id = post["id"]
+        db_post_id = post_cache[(owner_id, post_id)]
+
         comments_data = await vk_request("wall.getComments", {
-            "owner_id": post.owner_id,
-            "post_id": post.vk_post_id,
+            "owner_id": owner_id,
+            "post_id": post_id,
             "count": 100
         })
         comments = comments_data.get("items", [])
+
         for comment in comments:
             comment_date = comment.get("date")
-            # Фильтруем комментарии по дате (в рамках периода проекта)
-            if cache_start_date <= comment_date <= today_end: # Проверяем диапазон с начала кэша до конца сегодня
-                text = comment.get("text", "").strip()
-                if text:
-                    # Проверяем, есть ли уже комментарий с таким ID в БД для этого поста
-                    existing_comment_result = await db.execute(
-                        select(Comment).where(
-                            and_(
-                                Comment.vk_comment_id == comment["id"],
-                                Comment.post_id == post.id
-                            )
+            text = comment.get("text", "").strip()
+            if not text:
+                continue
+            if not (search_start_date <= comment_date <= today_end):
+                continue
+
+            # Проверяем, существует ли комментарий в БД
+            existing_comment_result = await db.execute(
+                select(Comment).where(
+                    and_(
+                        Comment.vk_comment_id == comment["id"],
+                        Comment.post_id == db_post_id
+                    )
+                )
+            )
+            existing_comment = existing_comment_result.scalar_one_or_none()
+
+            if existing_comment:
+                # Привязываем СУЩЕСТВУЮЩИЙ комментарий к проекту, если ещё не привязан
+                proj_comment_result = await db.execute(
+                    select(ProjectComment).where(
+                        and_(
+                            ProjectComment.project_id == project_id,
+                            ProjectComment.comment_id == existing_comment.id
                         )
                     )
-                    existing_comment = existing_comment_result.scalar_one_or_none()
-                    if not existing_comment: # Если комментарий новый
-                        all_comments.append({
-                            "comment": comment,
-                            "post_id_db": post.id
-                        })
-                        all_texts.append(text)
+                )
+                if not proj_comment_result.scalar_one_or_none():
+                    db.add(ProjectComment(project_id=project_id, comment_id=existing_comment.id))
+            else:
+                # Новый комментарий — добавляем в очередь на классификацию
+                all_comments_to_classify.append({"comment": comment, "post_id_db": db_post_id})
+                all_texts_to_classify.append(text)
 
-    if all_texts:
-        labels, confidences = await classify_texts_async(all_texts)
-        for i, item in enumerate(all_comments):
+    # --- Классификация и сохранение новых комментариев ---
+    if all_texts_to_classify:
+        labels, confidences = await classify_texts_async(all_texts_to_classify)
+        for i, item in enumerate(all_comments_to_classify):
             if i >= len(labels):
                 break
             comment = item["comment"]
             db_comment = Comment(
                 vk_comment_id=comment["id"],
-                post_id=item["post_id_db"], # Используем ID из БД
+                post_id=item["post_id_db"],
                 from_id=comment.get("from_id"),
                 text=comment["text"][:2000],
                 sentiment=labels[i],
@@ -245,50 +245,92 @@ async def run_project_search(db: AsyncSession, project_id: int):
                 date=comment.get("date")
             )
             db.add(db_comment)
+            await db.flush()
+            db.add(ProjectComment(project_id=project_id, comment_id=db_comment.id))
 
-    if all_texts:
-        print(f"   Сохранено/обновлено {len(all_texts)} комментариев.")
-    else:
-        print("   ❌ Нет новых/обновленных комментариев для сохранения за указанный период.")
-
+    # --- Финал ---
+    search_query.count = len(all_filtered_posts)
     await db.commit()
-    print(f"   ✅ Данные для проекта '{query_text}' за {depth_days} дней (включая сегодня) обновлены в DB.")
+    print(f"   ✅ Поиск для проекта '{query_text}' завершён. Все релевантные комментарии привязаны к проекту.")
 
 
-async def get_project_stats(db: AsyncSession, search_query_id: int):
-    """Получает статистику по комментариям для конкретного SearchQuery."""
-    posts_result = await db.execute(select(Post).where(Post.search_query_id == search_query_id))
-    posts = posts_result.scalars().all()
-    post_ids = [post.id for post in posts]
-    comments_result = await db.execute(select(Comment).where(Comment.post_id.in_(post_ids)))
-    all_comments = comments_result.scalars().all()
-
-    total_positive = sum(1 for c in all_comments if c.sentiment == "positive")
-    total_negative = sum(1 for c in all_comments if c.sentiment == "negative")
-    total_comments = len(all_comments)
-
-    # --- НОВАЯ ЛОГИКА: Получение постов с наибольшим количеством комментариев ---
-    comments_by_post_id = {}
-    for comment in all_comments:
-        comments_by_post_id.setdefault(comment.post_id, []).append(comment)
-
-    # Сортируем посты по количеству комментариев (по убыванию)
-    sorted_posts_with_comments = sorted(
-        posts,
-        key=lambda p: len(comments_by_post_id.get(p.id, [])),
-        reverse=True
+# --- Статистика проекта ---
+async def get_project_stats(db: AsyncSession, project_id: int):
+    """
+    Получает статистику по проекту:
+    - Считает ВСЕ посты, связанные с SearchQuery проекта (даже без комментариев).
+    - Считает комментарии ТОЛЬКО через ProjectComment (для тональности).
+    """
+    # --- 1. Найдём SearchQuery, связанный с проектом ---
+    project_query_link_result = await db.execute(
+        select(ProjectSearchQuery.search_query_id)
+        .where(ProjectSearchQuery.project_id == project_id)
+        .order_by(ProjectSearchQuery.id.desc())
     )
+    search_query_id_row = project_query_link_result.scalar_one_or_none()
 
-    # Берем топ 5 постов (или меньше, если их меньше)
-    top_posts_with_comments = sorted_posts_with_comments[:5]
+    if not search_query_id_row:
+        # Нет поискового запроса → нет данных
+        return {
+            "positive": 0,
+            "negative": 0,
+            "total": 0,
+            "posts_count": 0,
+            "top_posts": [],
+            "comments_by_post": {}
+        }
+
+    search_query_id = search_query_id_row
+
+    # --- 2. Считаем ВСЕ посты, связанные с этим SearchQuery ---
+    posts_result = await db.execute(
+        select(Post).where(Post.search_query_id == search_query_id)
+    )
+    all_posts = posts_result.scalars().all()
+    posts_count = len(all_posts)
+    post_ids = [p.id for p in all_posts]
+
+    # --- 3. Считаем комментарии ТОЛЬКО через ProjectComment (для тональности) ---
+    project_comment_ids_result = await db.execute(
+        select(ProjectComment.comment_id).where(ProjectComment.project_id == project_id)
+    )
+    project_comment_ids = [row.comment_id for row in project_comment_ids_result.all()]
+
+    if project_comment_ids:
+        comments_result = await db.execute(
+            select(Comment).where(Comment.id.in_(project_comment_ids))
+        )
+        all_comments = comments_result.scalars().all()
+        total_positive = sum(1 for c in all_comments if c.sentiment == "positive")
+        total_negative = sum(1 for c in all_comments if c.sentiment == "negative")
+        total_comments = len(all_comments)
+
+        # Группировка комментариев по постам (только для тех, у кого есть комментарии)
+        comments_by_post_id = {}
+        for comment in all_comments:
+            comments_by_post_id.setdefault(comment.post_id, []).append(comment)
+
+        # Топ-5 постов по количеству комментариев (только среди тех, у кого они есть)
+        posts_with_comments = [p for p in all_posts if p.id in comments_by_post_id]
+        top_posts = sorted(
+            posts_with_comments,
+            key=lambda p: len(comments_by_post_id[p.id]),
+            reverse=True
+        )[:5]
+    else:
+        # Нет комментариев → нулевая статистика по тональности
+        all_comments = []
+        total_positive = 0
+        total_negative = 0
+        total_comments = 0
+        comments_by_post_id = {}
+        top_posts = []
 
     return {
         "positive": total_positive,
         "negative": total_negative,
         "total": total_comments,
-        "posts_count": len(posts),
-        "top_posts": top_posts_with_comments, # Возвращаем список постов
-        "comments_by_post": comments_by_post_id # Возвращаем словарь комментариев для этих постов
+        "posts_count": posts_count,
+        "top_posts": top_posts,
+        "comments_by_post": comments_by_post_id
     }
-
-# Другие функции, связанные с логикой проектов, можно добавить сюда при необходимости.
