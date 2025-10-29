@@ -11,6 +11,13 @@
         .positive { background-color: #d4edda; }
         .negative { background-color: #f8d7da; }
         .back-link { margin-top: 20px; }
+        .top-posts { margin-top: 20px; }
+        .top-post-item { margin-bottom: 15px; padding: 10px; border: 1px solid #eee; }
+        .post-url { font-size: 0.9em; color: #666; }
+        .comments { margin-top: 10px; }
+        .comment { padding: 5px; margin: 2px 0; border-radius: 3px; }
+        .comment.positive { background-color: #d4edda; }
+        .comment.negative { background-color: #f8d7da; }
     </style>
 </head>
 <body>
@@ -32,6 +39,22 @@
             </div>
         </div>
     </div>
+
+    <div class="top-posts">
+        <h3>Посты с наибольшим количеством комментариев</h3>
+        {% for post in stats.top_posts %}
+        <div class="top-post-item">
+            <h4>{{ post.text[:100] }}{% if post.text|length > 100 %}...{% endif %}</h4>
+            <div class="post-url"><a href="{{ post.url }}" target="_blank">{{ post.url }}</a></div>
+            <div class="comments">
+                {% for comment in stats.comments_by_post.get(post.id, []) %}
+                <div class="comment {{ comment.sentiment }}">{{ comment.text[:100] }}{% if comment.text|length > 100 %}...{% endif %}</div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
     <div class="back-link">
         <a href="/">← Вернуться на главную</a>
     </div>
