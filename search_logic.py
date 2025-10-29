@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import CACHE_TTL
 from models import SearchQuery, Post, Comment
 from utils import vk_request, classify_texts_async
-
+from database import AsyncSessionLocal
 
 async def create_initial_search_query(db: AsyncSession, query: str, count: int, task_id: str):
     expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
