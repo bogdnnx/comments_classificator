@@ -97,8 +97,8 @@ async def trigger_project_search(
     project_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    await run_project_search(db, project_id)
-    return RedirectResponse(url=f"/projects/{project_id}/results", status_code=303)
+    await run_project_search(db, project_id)  # ← запуск здесь
+    return RedirectResponse(url=f"/projects/{project_id}/results?mode=full", status_code=303)
 
 @app.post("/projects/{project_id}/quick_search", response_class=HTMLResponse)
 async def trigger_project_quick_search(
@@ -106,41 +106,29 @@ async def trigger_project_quick_search(
     project_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Запускает БЫСТРЫЙ поиск (только из БД) и перенаправляет на результаты."""
+    # Ничего не запускаем — просто показываем текущие данные
     return RedirectResponse(url=f"/projects/{project_id}/results?mode=quick", status_code=303)
 
 @app.get("/projects/{project_id}/results", response_class=HTMLResponse)
 async def show_project_results(
     request: Request,
     project_id: int,
-    mode: str = "full",  # "full" или "quick"
+    mode: str = "quick",  # по умолчанию — быстрый просмотр
     db: AsyncSession = Depends(get_db)
 ):
     project = await get_project_by_id(db, project_id)
     if not project:
         return templates.TemplateResponse("error.html", {"request": request, "message": "Проект не найден."})
 
-    if mode == "quick":
-        # Быстрый поиск: только из БД, без запуска фоновой задачи
-        stats = await get_project_stats(db, project_id)
-        return templates.TemplateResponse("project_results.html", {
-            "request": request,
-            "project": project,
-            "stats": stats,
-            "query": project.name,
-            "mode": "quick"
-        })
-    else:
-        # Полный поиск: запускаем фоновую задачу (если нужно)
-        await run_project_search(db, project_id)
-        stats = await get_project_stats(db, project_id)
-        return templates.TemplateResponse("project_results.html", {
-            "request": request,
-            "project": project,
-            "stats": stats,
-            "query": project.name,
-            "mode": "full"
-        })
+    stats = await get_project_stats(db, project_id)
+
+    return templates.TemplateResponse("project_results.html", {
+        "request": request,
+        "project": project,
+        "stats": stats,
+        "query": project.name,
+        "mode": mode  # передаём в шаблон, чтобы показать "Быстрый" или "Полный"
+    })
 
 
 @app.get("/projects/{project_id}/edit", response_class=HTMLResponse)
