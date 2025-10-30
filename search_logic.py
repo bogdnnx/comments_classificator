@@ -9,18 +9,18 @@ from models import SearchQuery, Post, Comment
 from utils import vk_request, classify_texts_async
 from database import AsyncSessionLocal
 
-async def create_initial_search_query(db: AsyncSession, query: str, count: int, task_id: str):
-    expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
-    initial_search_query = SearchQuery(
-        query_text=query,
-        count=count,
-        task_id=task_id,
-        expires_at=expires_at
-    )
-    db.add(initial_search_query)
-    await db.commit()
-    await db.refresh(initial_search_query)
-    return initial_search_query
+# async def create_initial_search_query(db: AsyncSession, query: str, count: int, task_id: str):
+#     expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
+#     initial_search_query = SearchQuery(
+#         query_text=query,
+#         count=count,
+#         task_id=task_id,
+#         expires_at=expires_at
+#     )
+#     db.add(initial_search_query)
+#     await db.commit()
+#     await db.refresh(initial_search_query)
+#     return initial_search_query
 
 
 async def get_search_task_status(db: AsyncSession, task_id: str) -> dict:
@@ -104,7 +104,7 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     expires_at=expires_at
                 )
                 db_session.add(search_query)
-            await db_session.flush()
+                await db_session.flush()
 
             posts_data = await vk_request("newsfeed.search", {"q": query, "count": min(count, 200), "extended": 1})
             if not posts_data:

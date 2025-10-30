@@ -9,7 +9,7 @@ from models import SearchQuery
 from utils import make_cache_key
 from search_logic import (
     process_comments_async,
-    create_initial_search_query,
+    #create_initial_search_query,
     get_search_task_status,
     get_search_results
 )
@@ -17,6 +17,9 @@ from project_logic import (
     create_project, get_all_projects, get_project_by_id,
     update_project, delete_project, run_project_search, get_project_stats
 )
+import asyncio
+from datetime import datetime, timedelta
+from config import CACHE_TTL
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -42,9 +45,24 @@ async def search_posts(
     db: AsyncSession = Depends(get_db)
 ):
     task_id = str(uuid.uuid4())
-    await create_initial_search_query(db, query, count, task_id)
+    #await create_initial_search_query(db, query, count, task_id)
+    #await process_comments_async( task_id, query, count, make_cache_key(query, count))
+    initial_task = SearchQuery(
+        query_text=query,
+        count=count,
+        expires_at=datetime.utcnow() + timedelta(seconds=CACHE_TTL),  # например
+        task_id=task_id
+    )
+    db.add(initial_task)
+    await db.commit()
     background_tasks.add_task(process_comments_async, task_id, query, count, make_cache_key(query, count))
-    return RedirectResponse(url=f"/results/{task_id}", status_code=303)
+    print(request,task_id,query)
+    return templates.TemplateResponse("results_loading.html", {
+        "request": request,
+        "task_id": task_id,
+        "query": query
+    })
+    #return RedirectResponse(url=f"/results/{task_id}", status_code=303)
 
 
 @app.get("/status/{task_id}")
@@ -97,6 +115,7 @@ async def trigger_project_search(
     project_id: int,
     db: AsyncSession = Depends(get_db)
 ):
+
     await run_project_search(db, project_id)  # ← запуск здесь
     return RedirectResponse(url=f"/projects/{project_id}/results?mode=full", status_code=303)
 
