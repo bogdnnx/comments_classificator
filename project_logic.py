@@ -115,7 +115,8 @@ async def run_project_search(db: AsyncSession, project_id: int):
     current_end_time = today_end
 
     for day in range(depth_days):
-        current_start_time = int((datetime.fromtimestamp(current_end_time) - timedelta(days=1)).timestamp())
+        current_start_time = today_start - day * 86400  # день N назад (0 = сегодня)
+        current_end_time = current_start_time + 86400
         print(f"   📥 Ищем посты с {datetime.fromtimestamp(current_start_time).date()} по {datetime.fromtimestamp(current_end_time).date()}")
         posts_data = await vk_request("newsfeed.search", {
             "q": query_text,
@@ -256,11 +257,18 @@ async def run_project_search(db: AsyncSession, project_id: int):
 
 # --- Статистика проекта ---
 async def get_project_stats(db: AsyncSession, project_id: int):
-    """
-    Получает статистику по проекту:
-    - Считает ВСЕ посты, связанные с SearchQuery проекта (даже без комментариев).
-    - Считает комментарии ТОЛЬКО через ProjectComment (для тональности).
-    """
+    project = await get_project_by_id(db, project_id)
+    if not project:
+        print(f"❌ Проект с ID {project_id} не найден.")
+        return {
+            "positive": 0,
+            "negative": 0,
+            "total": 0,
+            "posts_count": 0,
+            "top_posts": [],
+            "comments_by_post": {}
+        }
+
     # --- 1. Найдём SearchQuery, связанный с проектом ---
     project_query_link_result = await db.execute(
         select(ProjectSearchQuery.search_query_id)
@@ -270,7 +278,7 @@ async def get_project_stats(db: AsyncSession, project_id: int):
     search_query_id_row = project_query_link_result.scalar_one_or_none()
 
     if not search_query_id_row:
-        # Нет поискового запроса → нет данных
+        print(f"❌ Нет связанного SearchQuery для проекта {project_id}.")
         return {
             "positive": 0,
             "negative": 0,
@@ -290,47 +298,79 @@ async def get_project_stats(db: AsyncSession, project_id: int):
     posts_count = len(all_posts)
     post_ids = [p.id for p in all_posts]
 
-    # --- 3. Считаем комментарии ТОЛЬКО через ProjectComment (для тональности) ---
+    # --- 3. Считаем комментарии ТОЛЬКО через ProjectComment ---
     project_comment_ids_result = await db.execute(
         select(ProjectComment.comment_id).where(ProjectComment.project_id == project_id)
     )
     project_comment_ids = [row.comment_id for row in project_comment_ids_result.all()]
 
-    if project_comment_ids:
-        comments_result = await db.execute(
-            select(Comment).where(Comment.id.in_(project_comment_ids))
-        )
-        all_comments = comments_result.scalars().all()
-        total_positive = sum(1 for c in all_comments if c.sentiment == "positive")
-        total_negative = sum(1 for c in all_comments if c.sentiment == "negative")
-        total_comments = len(all_comments)
+    if not project_comment_ids:
+        print(f"⚠️ Нет связанных комментариев для проекта {project_id}.")
+        return {
+            "positive": 0,
+            "negative": 0,
+            "total": 0,
+            "posts_count": posts_count,
+            "top_posts": [],
+            "comments_by_post": {}
+        }
 
-        # Группировка комментариев по постам (только для тех, у кого есть комментарии)
-        comments_by_post_id = {}
-        for comment in all_comments:
-            comments_by_post_id.setdefault(comment.post_id, []).append(comment)
+    # --- 4. Выбираем комментарии ---
+    comments_result = await db.execute(
+        select(Comment).where(Comment.id.in_(project_comment_ids))
+    )
+    all_comments = comments_result.scalars().all()
 
-        # Топ-5 постов по количеству комментариев (только среди тех, у кого они есть)
-        posts_with_comments = [p for p in all_posts if p.id in comments_by_post_id]
-        top_posts = sorted(
-            posts_with_comments,
-            key=lambda p: len(comments_by_post_id[p.id]),
-            reverse=True
-        )[:5]
-    else:
-        # Нет комментариев → нулевая статистика по тональности
-        all_comments = []
-        total_positive = 0
-        total_negative = 0
-        total_comments = 0
-        comments_by_post_id = {}
-        top_posts = []
+    print(f"🔍 Найдено {len(all_comments)} комментариев до фильтрации.")
+
+    # --- 5. Вычисляем диапазон дат ---
+    now = datetime.utcnow()
+    today_start = int(datetime(now.year, now.month, now.day).timestamp())
+    today_end = int(now.timestamp())
+    search_start_date = today_start - (project.search_depth_days - 1) * 86400
+
+    print(
+        f"📅 Диапазон дат: от {datetime.fromtimestamp(search_start_date).date()} до {datetime.fromtimestamp(today_end).date()}")
+
+    # --- 6. Фильтруем комментарии по дате ---
+    filtered_comments = [
+        c for c in all_comments
+        if search_start_date <= c.date <= today_end  # теперь до "сейчас"
+    ]
+
+    print(f"🔍 Осталось {len(filtered_comments)} комментариев после фильтрации.")
+
+    # --- 6.5. Подсчитываем посты в том же диапазоне ---
+    posts_in_range = [
+        p for p in all_posts
+        if search_start_date <= p.date <= today_end
+    ]
+
+    print(f"📊 Найдено {len(posts_in_range)} постов в диапазоне дат.")
+
+    # --- 7. Подсчитываем тональность ---
+    total_positive = sum(1 for c in filtered_comments if c.sentiment == "positive")
+    total_negative = sum(1 for c in filtered_comments if c.sentiment == "negative")
+    total_comments = len(filtered_comments)
+
+    # --- 8. Группируем комментарии по постам ---
+    comments_by_post_id = {}
+    for comment in filtered_comments:
+        comments_by_post_id.setdefault(comment.post_id, []).append(comment)
+
+    # --- 9. Топ-5 постов по количеству комментариев ---
+    posts_with_comments = [p for p in all_posts if p.id in comments_by_post_id]
+    top_posts = sorted(
+        posts_with_comments,
+        key=lambda p: len(comments_by_post_id[p.id]),
+        reverse=True
+    )[:5]
 
     return {
         "positive": total_positive,
         "negative": total_negative,
         "total": total_comments,
-        "posts_count": posts_count,
+        "posts_count": len(posts_in_range),
         "top_posts": top_posts,
         "comments_by_post": comments_by_post_id
     }
