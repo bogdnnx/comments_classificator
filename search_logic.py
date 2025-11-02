@@ -1,26 +1,13 @@
 # search_logic.py
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from config import CACHE_TTL
 from models import SearchQuery, Post, Comment
-from utils import vk_request, classify_texts_async
+from utils import vk_request, classify_texts_async, fetch_comments_via_execute
 from database import AsyncSessionLocal
-
-# async def create_initial_search_query(db: AsyncSession, query: str, count: int, task_id: str):
-#     expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
-#     initial_search_query = SearchQuery(
-#         query_text=query,
-#         count=count,
-#         task_id=task_id,
-#         expires_at=expires_at
-#     )
-#     db.add(initial_search_query)
-#     await db.commit()
-#     await db.refresh(initial_search_query)
-#     return initial_search_query
 
 
 async def get_search_task_status(db: AsyncSession, task_id: str) -> dict:
@@ -118,13 +105,15 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                 await db_session.commit()
                 return
 
-            all_comments = []
-            all_texts = []
+            # --- Сохраняем посты и собираем данные для комментариев ---
             post_cache = {}
+            posts_to_fetch = []
 
             for post in posts:
                 owner_id = post["owner_id"]
                 post_id = post["id"]
+                posts_to_fetch.append((owner_id, post_id))
+
                 if (owner_id, post_id) not in post_cache:
                     db_post = Post(
                         vk_post_id=post_id,
@@ -138,48 +127,56 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     await db_session.flush()
                     post_cache[(owner_id, post_id)] = db_post.id
 
-                comments_data = await vk_request("wall.getComments", {
-                    "owner_id": owner_id,
-                    "post_id": post_id,
-                    "count": 100
-                })
-                comments = comments_data.get("items", [])
-                for comment in comments:
-                    text = comment.get("text", "").strip()
-                    if text:
-                        all_comments.append({
-                            "comment": comment,
-                            "owner_id": owner_id,
-                            "post_id": post_id
-                        })
-                        all_texts.append(text)
+            # --- Получаем комментарии через execute ---
+            print(f"   📥 Запрашиваем комментарии к {len(posts_to_fetch)} постам через execute...")
+            all_comments_raw = await fetch_comments_via_execute(posts_to_fetch)
 
+            # --- Подготовка текстов для классификации ---
+            all_texts = [item["comment"]["text"].strip() for item in all_comments_raw]
+
+            # --- Классификация и сохранение ---
             if all_texts:
                 labels, confidences = await classify_texts_async(all_texts)
-                for i, item in enumerate(all_comments):
-                    if i >= len(labels):
-                        break
-                    owner_id = item["owner_id"]
-                    post_id = item["post_id"]
-                    comment = item["comment"]
-                    db_comment = Comment(
-                        vk_comment_id=comment["id"],
-                        post_id=post_cache[(owner_id, post_id)],
-                        from_id=comment.get("from_id"),
-                        text=comment["text"][:2000],
-                        sentiment=labels[i],
-                        sentiment_confidence=float(confidences[i]),
-                        date=comment.get("date")
-                    )
-                    db_session.add(db_comment)
-
-            if all_texts:
-                print(f"   Сохранено комментариев: {len(all_texts)}")
+                print(f"   🧠 Классифицировано комментариев: {len(labels)}")
             else:
-                print("   ❌ Нет комментариев для сохранения")
+                labels = []
+                confidences = []
+                print("   ❌ Нет комментариев для классификации")
+
+            saved_count = 0
+            for i, item in enumerate(all_comments_raw):
+                if i >= len(labels):
+                    break
+
+                owner_id = item["owner_id"]
+                post_id_vk = item["post_id"]
+                comment = item["comment"]
+
+                db_post_id = post_cache.get((owner_id, post_id_vk))
+                if not db_post_id:
+                    continue  # Пропускаем, если пост не был сохранён
+
+                db_comment = Comment(
+                    vk_comment_id=comment["id"],
+                    post_id=db_post_id,
+                    from_id=comment.get("from_id"),
+                    text=comment["text"][:2000],
+                    sentiment=labels[i],
+                    sentiment_confidence=float(confidences[i]),
+                    date=comment.get("date")
+                )
+                db_session.add(db_comment)
+                saved_count += 1
+
+            if saved_count:
+                print(f"   💾 Сохранено комментариев в БД: {saved_count}")
+            else:
+                print("   ⚠️ Комментарии не были сохранены")
 
             await db_session.commit()
             print(f"✅ Задача {task_id} успешно завершена")
 
     except Exception as e:
         print(f"❌ Ошибка в задаче {task_id}: {e}")
+        import traceback
+        traceback.print_exc()
