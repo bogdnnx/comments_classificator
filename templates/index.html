@@ -102,7 +102,7 @@
         <form id="projectForm" class="project-form" method="post" action="/projects/create">
             <div>Создание нового проекта</div>
             <input type="text" name="name" placeholder="Тема" required>
-            <input type="number" name="search_depth_days" placeholder="Глубина поиска (дней)" min="1" required>
+            <input type="number" name="search_depth_days" placeholder="Глубина поиска (дней)" min="1" max="90" required>
             <div class="project-form-buttons">
                 <button type="button" id="cancelFormBtn">Отмена</button>
                 <button type="submit">Создать</button>
