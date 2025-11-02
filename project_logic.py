@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Project, SearchQuery, Post, Comment, ProjectSearchQuery, ProjectComment
-from utils import vk_request, classify_texts_async
+from utils import vk_request, classify_texts_async,fetch_comments_via_execute
 from config import CACHE_TTL
 
 
@@ -181,54 +181,58 @@ async def run_project_search(db: AsyncSession, project_id: int):
     all_comments_to_classify = []
     all_texts_to_classify = []
 
-    for post in all_filtered_posts:
-        owner_id = post["owner_id"]
-        post_id = post["id"]
-        db_post_id = post_cache[(owner_id, post_id)]
+    # 1. Собираем список постов для запроса комментариев
+    posts_for_comments = [(post["owner_id"], post["id"]) for post in all_filtered_posts]
+    print(f"   📥 Запрашиваем комментарии к {len(posts_for_comments)} постам через execute...")
 
-        comments_data = await vk_request("wall.getComments", {
-            "owner_id": owner_id,
-            "post_id": post_id,
-            "count": 100
-        })
-        comments = comments_data.get("items", [])
+    # 2. Получаем ВСЕ комментарии одним/несколькими execute-запросами
+    all_vk_comments = await fetch_comments_via_execute(posts_for_comments)
 
-        for comment in comments:
-            comment_date = comment.get("date")
-            text = comment.get("text", "").strip()
-            if not text:
-                continue
-            if not (search_start_date <= comment_date <= today_end):
-                continue
+    # 3. Обрабатываем каждый полученный комментарий
+    for item in all_vk_comments:
+        owner_id = item["owner_id"]
+        post_id_vk = item["post_id"]
+        comment = item["comment"]
 
-            # Проверяем, существует ли комментарий в БД
-            existing_comment_result = await db.execute(
-                select(Comment).where(
+        # Находим ID поста в БД (уже сохранён ранее)
+        db_post_id = post_cache.get((owner_id, post_id_vk))
+        if db_post_id is None:
+            continue  # Не должно происходить, но на всякий случай
+
+        comment_date = comment.get("date", 0)
+        text = comment.get("text", "").strip()
+        if not text:
+            continue
+        if not (search_start_date <= comment_date <= today_end):
+            continue
+
+        # Проверяем, существует ли комментарий в БД
+        existing_comment_result = await db.execute(
+            select(Comment).where(
+                and_(
+                    Comment.vk_comment_id == comment["id"],
+                    Comment.post_id == db_post_id
+                )
+            )
+        )
+        existing_comment = existing_comment_result.scalar_one_or_none()
+
+        if existing_comment:
+            # Привязываем СУЩЕСТВУЮЩИЙ комментарий к проекту, если ещё не привязан
+            proj_comment_result = await db.execute(
+                select(ProjectComment).where(
                     and_(
-                        Comment.vk_comment_id == comment["id"],
-                        Comment.post_id == db_post_id
+                        ProjectComment.project_id == project_id,
+                        ProjectComment.comment_id == existing_comment.id
                     )
                 )
             )
-            existing_comment = existing_comment_result.scalar_one_or_none()
-
-            if existing_comment:
-                # Привязываем СУЩЕСТВУЮЩИЙ комментарий к проекту, если ещё не привязан
-                proj_comment_result = await db.execute(
-                    select(ProjectComment).where(
-                        and_(
-                            ProjectComment.project_id == project_id,
-                            ProjectComment.comment_id == existing_comment.id
-                        )
-                    )
-                )
-                if not proj_comment_result.scalar_one_or_none():
-                    db.add(ProjectComment(project_id=project_id, comment_id=existing_comment.id))
-            else:
-                # Новый комментарий — добавляем в очередь на классификацию
-                all_comments_to_classify.append({"comment": comment, "post_id_db": db_post_id})
-                all_texts_to_classify.append(text)
-
+            if not proj_comment_result.scalar_one_or_none():
+                db.add(ProjectComment(project_id=project_id, comment_id=existing_comment.id))
+        else:
+            # Новый комментарий — добавляем в очередь на классификацию
+            all_comments_to_classify.append({"comment": comment, "post_id_db": db_post_id})
+            all_texts_to_classify.append(text)
     # --- Классификация и сохранение новых комментариев ---
     if all_texts_to_classify:
         labels, confidences = await classify_texts_async(all_texts_to_classify)
