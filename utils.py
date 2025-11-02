@@ -134,6 +134,7 @@ async def fetch_comments_via_execute(posts: List[tuple[int, int]]) -> List[dict[
     BATCH_SIZE = 25
 
     for i in range(0, len(posts), BATCH_SIZE):
+        print(f"Процесс выполнения execute: |{i}/{len(posts)}|")
         batch = posts[i:i + BATCH_SIZE]
         calls = [
             f'API.wall.getComments({{"owner_id":{oid},"post_id":{pid},"count":100}})'
