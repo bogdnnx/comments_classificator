@@ -31,13 +31,15 @@ class SentimentAnalyzer:
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 probabilities = F.softmax(outputs.logits, dim=-1)
-                sentiment_score = probabilities[0][1].item()  # 1 - позитивный класс
-
+                sentiment_score_neutral = probabilities[0][0].item() # нейтрал
+                sentiment_score = probabilities[0][1].item()  # позитив
+                sentiment_score_negative = probabilities[0][2].item() # негатив
+                scores = [sentiment_score_neutral, sentiment_score, sentiment_score_negative]
             # Определяем эмоциональную оценку
-            if sentiment_score > self.LevelSentiment:
-                return "positive", sentiment_score
-            else:
-                return "negative", sentiment_score
+            max_index = scores.index(max(scores))
+            labels = ["neutral", "positive", "negative"]
+            label = labels[max_index]
+            return label, scores[max_index]
 
         except Exception as e:
             print(f"Ошибка при анализе текста: {e}")

@@ -33,7 +33,7 @@ class Comment(Base):
     post_id = Column(Integer, ForeignKey('posts.id', ondelete="CASCADE"), nullable=False)
     from_id = Column(Integer)
     text = Column(Text, nullable=False)
-    sentiment = Column(String, CheckConstraint("sentiment IN ('positive', 'negative')"))
+    sentiment = Column(String, CheckConstraint("sentiment IN ('positive', 'negative', 'neutral')"))
     sentiment_confidence = Column(Float)
     date = Column(Integer)
     classified_at = Column(DateTime(timezone=True), server_default=func.now())
