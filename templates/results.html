@@ -8,6 +8,7 @@
         .summary { font-size: 18px; font-weight: bold; }
         .positive { color: #2e7d32; }
         .negative { color: #c62828; }
+        .neutral { color: ##6c757d; }
         .container { display: flex; gap: 20px; height: calc(100vh - 200px); }
         .column { background: white; border-radius: 8px; padding: 15px; overflow-y: auto; }
         .posts-column { width: 35%; }
@@ -47,7 +48,14 @@
     <div class="column comments-column">
         <h2>💬 Комментарии ({{ all_comments|length }})</h2>
         {% for comment in all_comments %}
-        <div class="comment-item {% if comment.sentiment == 'positive' %}sentiment-positive{% else %}sentiment-negative{% endif %}">
+        <div class="comment-item
+            {% if comment.sentiment == 'positive' %}
+                sentiment-positive
+            {% elif comment.sentiment == 'negative' %}
+                sentiment-negative
+            {% elif comment.sentiment == 'neutral' %}
+                sentiment-neutral
+            {% endif %}">
             <div><strong>[{{ comment.sentiment }}]</strong> {{ comment.text }}</div>
             <div style="font-size:12px; color:#666;">
                 Автор: {{ comment.from_id }} |

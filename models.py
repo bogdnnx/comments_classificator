@@ -62,5 +62,4 @@ class ProjectComment(Base):
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
     comment_id = Column(Integer, ForeignKey('comments.id', ondelete="CASCADE"), nullable=False)
-    # Можно добавить дополнительные поля, если нужно, например, дата добавления в проект
     added_at = Column(DateTime, server_default=func.now())

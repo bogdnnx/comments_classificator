@@ -11,23 +11,24 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data # Правильный формат: имя_тома:путь_в_контейнере
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:alpine
-    container_name: vk-redis
+  web:
+    build:
+      context: C:\Pycharm Project\comments_classificator
+    container_name: vk-web-app
     ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: 1
 
 volumes:
-  pgdata:
+  pgdata: # Исправлено имя тома на pgdata, чтобы соответствовать строке выше
