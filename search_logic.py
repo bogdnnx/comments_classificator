@@ -1,4 +1,3 @@
-# search_logic.py
 import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
@@ -88,7 +87,8 @@ async def process_comments_async(task_id: str, query: str, count: int, cache_key
                     query_text=query,
                     count=count,
                     task_id=task_id,
-                    expires_at=expires_at
+                    expires_at=expires_at,
+                    project_id=None  # ← добавили
                 )
                 db_session.add(search_query)
                 await db_session.flush()

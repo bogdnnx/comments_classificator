@@ -9,7 +9,6 @@ from models import SearchQuery
 from utils import make_cache_key
 from search_logic import (
     process_comments_async,
-    #create_initial_search_query,
     get_search_task_status,
     get_search_results
 )
@@ -45,13 +44,12 @@ async def search_posts(
     db: AsyncSession = Depends(get_db)
 ):
     task_id = str(uuid.uuid4())
-    #await create_initial_search_query(db, query, count, task_id)
-    #await process_comments_async( task_id, query, count, make_cache_key(query, count))
     initial_task = SearchQuery(
         query_text=query,
         count=count,
-        expires_at=datetime.utcnow() + timedelta(seconds=CACHE_TTL),  # например
-        task_id=task_id
+        expires_at=datetime.utcnow() + timedelta(seconds=CACHE_TTL),
+        task_id=task_id,
+        project_id=None  # ← добавили
     )
     db.add(initial_task)
     await db.commit()
@@ -62,7 +60,6 @@ async def search_posts(
         "task_id": task_id,
         "query": query
     })
-    #return RedirectResponse(url=f"/results/{task_id}", status_code=303)
 
 
 @app.get("/status/{task_id}")
@@ -115,8 +112,7 @@ async def trigger_project_search(
     project_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-
-    await run_project_search(db, project_id)  # ← запуск здесь
+    await run_project_search(db, project_id)
     return RedirectResponse(url=f"/projects/{project_id}/results?mode=full", status_code=303)
 
 @app.post("/projects/{project_id}/quick_search", response_class=HTMLResponse)
@@ -146,7 +142,7 @@ async def show_project_results(
         "project": project,
         "stats": stats,
         "query": project.name,
-        "mode": mode  # передаём в шаблон, чтобы показать "Быстрый" или "Полный"
+        "mode": mode
     })
 
 

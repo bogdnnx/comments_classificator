@@ -1,4 +1,3 @@
-# models.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, CheckConstraint, func
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -13,6 +12,7 @@ class SearchQuery(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
     task_id = Column(String, unique=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete="CASCADE"), nullable=True)
 
 class Post(Base):
     __tablename__ = 'posts'
@@ -38,23 +38,14 @@ class Comment(Base):
     date = Column(Integer)
     classified_at = Column(DateTime(timezone=True), server_default=func.now())
 
-# --- Таблица Project ---
 class Project(Base):
     __tablename__ = 'projects'
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False) # Тема
-    search_depth_days = Column(Integer, nullable=False) # Глубина поиска в днях
-    # Используем offset-naive datetime, как в остальных таблицах
+    name = Column(String, nullable=False)
+    search_depth_days = Column(Integer, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
-
-class ProjectSearchQuery(Base):
-    __tablename__ = 'project_search_queries'
-
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey('projects.id', ondelete="CASCADE"), nullable=False)
-    search_query_id = Column(Integer, ForeignKey('search_queries.id', ondelete="CASCADE"), nullable=False)
 
 class ProjectComment(Base):
     __tablename__ = 'project_comments'

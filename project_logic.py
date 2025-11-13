@@ -1,10 +1,9 @@
-# project_logic.py
 import asyncio
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import Project, SearchQuery, Post, Comment, ProjectSearchQuery, ProjectComment
-from utils import vk_request, classify_texts_async,fetch_comments_via_execute
+from models import Project, SearchQuery, Post, Comment, ProjectComment
+from utils import vk_request, classify_texts_async, fetch_comments_via_execute
 from config import CACHE_TTL
 
 
@@ -65,35 +64,16 @@ async def run_project_search(db: AsyncSession, project_id: int):
     today_end = int(now.timestamp())
     search_start_date = today_start - (depth_days - 1) * 86400
 
-    # --- Поиск/создание SearchQuery через ProjectSearchQuery ---
-    project_query_link_result = await db.execute(
-        select(ProjectSearchQuery)
-        .where(ProjectSearchQuery.project_id == project_id)
-        .order_by(ProjectSearchQuery.id.desc())
+    # --- Поиск/создание SearchQuery с project_id ---
+    search_query_result = await db.execute(
+        select(SearchQuery)
+        .where(SearchQuery.project_id == project_id)
+        .order_by(SearchQuery.id.desc())
     )
-    project_query_link = project_query_link_result.scalar_one_or_none()
+    search_query = search_query_result.scalar_one_or_none()
 
-    if project_query_link:
-        search_query_result = await db.execute(
-            select(SearchQuery).where(SearchQuery.id == project_query_link.search_query_id)
-        )
-        search_query = search_query_result.scalar_one_or_none()
-        if not search_query:
-            print(f"❌ Связанный SearchQuery не найден. Создаём новый.")
-            expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
-            search_query = SearchQuery(
-                query_text=query_text,
-                count=0,
-                created_at=datetime.utcnow(),
-                expires_at=expires_at,
-                task_id=f"project_{project_id}"
-            )
-            db.add(search_query)
-            await db.flush()
-            project_query_link.search_query_id = search_query.id
-            db.add(project_query_link)
-        else:
-            print(f"   📥 Используем существующий SearchQuery (ID: {search_query.id})")
+    if search_query:
+        print(f"   📥 Используем существующий SearchQuery (ID: {search_query.id})")
     else:
         print(f"   🆕 Создаём новый SearchQuery для проекта {project_id}")
         expires_at = datetime.utcnow() + timedelta(seconds=CACHE_TTL)
@@ -102,12 +82,11 @@ async def run_project_search(db: AsyncSession, project_id: int):
             count=0,
             created_at=datetime.utcnow(),
             expires_at=expires_at,
-            task_id=f"project_{project_id}"
+            task_id=f"project_{project_id}",
+            project_id=project_id  # ← добавили
         )
         db.add(search_query)
         await db.flush()
-        project_query_link = ProjectSearchQuery(project_id=project_id, search_query_id=search_query.id)
-        db.add(project_query_link)
 
     # --- Поиск постов по дням ---
     all_filtered_posts = []
@@ -233,6 +212,7 @@ async def run_project_search(db: AsyncSession, project_id: int):
             # Новый комментарий — добавляем в очередь на классификацию
             all_comments_to_classify.append({"comment": comment, "post_id_db": db_post_id})
             all_texts_to_classify.append(text)
+
     # --- Классификация и сохранение новых комментариев ---
     if all_texts_to_classify:
         labels, confidences = await classify_texts_async(all_texts_to_classify)
@@ -274,12 +254,12 @@ async def get_project_stats(db: AsyncSession, project_id: int):
         }
 
     # --- 1. Найдём SearchQuery, связанный с проектом ---
-    project_query_link_result = await db.execute(
-        select(ProjectSearchQuery.search_query_id)
-        .where(ProjectSearchQuery.project_id == project_id)
-        .order_by(ProjectSearchQuery.id.desc())
+    search_query_result = await db.execute(
+        select(SearchQuery.id)
+        .where(SearchQuery.project_id == project_id)
+        .order_by(SearchQuery.id.desc())
     )
-    search_query_id_row = project_query_link_result.scalar_one_or_none()
+    search_query_id_row = search_query_result.scalar_one_or_none()
 
     if not search_query_id_row:
         print(f"❌ Нет связанного SearchQuery для проекта {project_id}.")
