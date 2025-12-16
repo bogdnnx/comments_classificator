@@ -8,15 +8,15 @@ import torch.nn.functional as F
 
 class SentimentAnalyzer:
     def __init__(self, LevelSentiment = 0.5): # Порог эмоциональной оценки.
-        #self.model_name = "cointegrated/rubert-tiny2"
+        self.model_name = "rubert-base-cased-sentiment"
         self.LevelSentiment = LevelSentiment
-        self.model_name = "sentiment_model"
+        #self.model_name = "sentiment_model"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
         self.model.eval()
-
+        self.emoji_weight = 0.25
     def analyze_sentiment(self, text):
         """Анализирует эмоциональную окраску текста"""
         try:
@@ -25,17 +25,34 @@ class SentimentAnalyzer:
                 return_tensors='pt',
                 truncation=True,
                 padding=True,
-                #max_length=512
+                max_length=512
             ).to(self.device)
 
+            positive_emojis = {
+                    # Текстовые
+                    ':)', ':-)', '=)', ':D', ':-D', '=D', ';)', ';-)', ':P', ':-P',
+                    # Emoji
+                    '😊', '🙂', '😄', '😃', '😁', '😇', '😍', '🥰', '🤗', '👍',
+                    '❤️', '💖', '💕', '✨', '🎉', '🥳'
+                }
+            negative_emojis = {    ':(', ':-(', '=(', ':/', ':-/', ':\\', ':-\\', ':|', ':-|',
+                                    # Emoji
+                                    '😞', '😔', '😢', '😭', '😠', '😡', '😖', '😩', '😓', '👎',
+                                    '💔', '🤢', '🤬'
+                                   }
+
+            has_positive_emoji = any(emoji in text for emoji in positive_emojis)
+            has_negative_emoji = any(emoji in text for emoji in negative_emojis)
+            #print(has_positive_emoji, has_negative_emoji)
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 probabilities = F.softmax(outputs.logits, dim=-1)
                 sentiment_score_neutral = probabilities[0][0].item() # нейтрал
-                sentiment_score = probabilities[0][1].item()  # позитив
-                sentiment_score_negative = probabilities[0][2].item() # негатив
+                sentiment_score = probabilities[0][1].item()  + self.emoji_weight * has_positive_emoji# позитив
+                sentiment_score_negative = probabilities[0][2].item() + self.emoji_weight * has_negative_emoji# негатив
                 scores = [sentiment_score_neutral, sentiment_score, sentiment_score_negative]
             # Определяем эмоциональную оценку
+            print(scores)
             max_index = scores.index(max(scores))
             labels = ["neutral", "positive", "negative"]
             label = labels[max_index]
@@ -68,7 +85,6 @@ class SentimentClassifierStub:
         confidences = []
 
         for text in texts:
-            # Простая эвристика: если есть "хорош", "отличн", "люб" — positive
             text_lower = text.lower()
             label, confidence = self.Analyzer.analyze_sentiment(text_lower)
 
