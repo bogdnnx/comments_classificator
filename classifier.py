@@ -56,7 +56,7 @@ class SentimentAnalyzer:
             max_index = scores.index(max(scores))
             labels = ["neutral", "positive", "negative"]
             label = labels[max_index]
-            return label, scores[max_index]
+            return label, min(scores[max_index],1)
 
         except Exception as e:
             print(f"Ошибка при анализе текста: {e}")
