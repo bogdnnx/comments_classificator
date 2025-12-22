@@ -342,13 +342,13 @@ async def get_project_stats(db: AsyncSession, project_id: int):
     for comment in filtered_comments:
         comments_by_post_id.setdefault(comment.post_id, []).append(comment)
 
-    # --- 9. Топ-5 постов по количеству комментариев ---
+    # --- 9. Топ-n постов по количеству комментариев ---
     posts_with_comments = [p for p in all_posts if p.id in comments_by_post_id]
     top_posts = sorted(
         posts_with_comments,
         key=lambda p: len(comments_by_post_id[p.id]),
         reverse=True
-    )[:5]
+    )[:]
 
     return {
         "positive": total_positive,

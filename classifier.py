@@ -33,7 +33,7 @@ class SentimentAnalyzer:
                     ':)', ':-)', '=)', ':D', ':-D', '=D', ';)', ';-)', ':P', ':-P',
                     # Emoji
                     '😊', '🙂', '😄', '😃', '😁', '😇', '😍', '🥰', '🤗', '👍',
-                    '❤️', '💖', '💕', '✨', '🎉', '🥳'
+                    '❤️', '💖', '💕', '✨', '🎉', '🥳', "🤣", "😂", "😀", '🔥'
                 }
             negative_emojis = {    ':(', ':-(', '=(', ':/', ':-/', ':\\', ':-\\', ':|', ':-|',
                                     # Emoji
@@ -52,7 +52,7 @@ class SentimentAnalyzer:
                 sentiment_score_negative = probabilities[0][2].item() + self.emoji_weight * has_negative_emoji# негатив
                 scores = [sentiment_score_neutral, sentiment_score, sentiment_score_negative]
             # Определяем эмоциональную оценку
-            print(scores)
+            #print(scores)
             max_index = scores.index(max(scores))
             labels = ["neutral", "positive", "negative"]
             label = labels[max_index]

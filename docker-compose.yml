@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15
@@ -11,7 +9,7 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data # Правильный формат: имя_тома:путь_в_контейнере
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -20,7 +18,7 @@ services:
 
   web:
     build:
-      context: C:\Pycharm Project\comments_classificator
+      context: .
     container_name: vk-web-app
     ports:
       - "8000:8000"
@@ -29,6 +27,7 @@ services:
         condition: service_healthy
     environment:
       PYTHONUNBUFFERED: 1
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/vk_sentiment
 
 volumes:
-  pgdata: # Исправлено имя тома на pgdata, чтобы соответствовать строке выше
+  pgdata:
