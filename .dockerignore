@@ -1,4 +1,8 @@
-.venv/
-__pycache__/
-not_use/
-README.md
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+.idea
+*.log

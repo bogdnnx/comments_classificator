@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: vk_sentiment
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: 12345
     ports:
       - "5433:5432"
     volumes:
@@ -16,6 +16,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: valkey/valkey:latest
+    container_name: vk-redis
+    command: valkey-server --requirepass "" --bind 0.0.0.0
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
   web:
     build:
       context: .
@@ -25,9 +37,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      PYTHONUNBUFFERED: 1
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/vk_sentiment
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: "postgresql+asyncpg://postgres:12345@postgres:5432/vk_sentiment"
+      REDIS_URL: "redis://redis:6379"
+      VK_ACCESS_TOKEN: ""
+      CACHE_TTL: "604800"
 
 volumes:
   pgdata:
